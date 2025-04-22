@@ -10,6 +10,72 @@ import { mockSimaAPI, SimaResponse, canvasToBase64, generateGreeting } from './c
 import ChatBox from './components/ChatBox';
 import { useAudio } from './hooks/useAudio';
 import axios from 'axios';
+import OpenAI from "openai";
+
+// OpenAI API client yaradırıq
+const openai = new OpenAI({
+  apiKey: process.env.REACT_APP_OPENAI_API_KEY, // API key .env faylından götürülür
+  dangerouslyAllowBrowser: true // Brauzer mühitində çalışmasına icazə veririk
+});
+
+// Mətni səsə çevirmək üçün funksiya
+const textToSpeech = async (text: string): Promise<ArrayBuffer | null> => {
+  try {
+    console.log("OpenAI ilə səsləndirmə başladı:", text.substring(0, 50) + "...");
+    
+    const response = await openai.audio.speech.create({
+      model: "gpt-4o-mini-tts", // daha sürətli model
+      voice: "nova", // qadın səsi
+      input: text,
+      instructions: "Speak in a cheerful and positive tone.",
+      speed: 1.0,
+      response_format: "aac"
+    });
+    
+    const arrayBuffer = await response.arrayBuffer();
+    console.log("OpenAI səsləndirmə tamamlandı, audio ölçüsü:", arrayBuffer.byteLength, "bayt");
+    
+    return arrayBuffer;
+  } catch (error) {
+    console.error("OpenAI səsləndirmə xətası:", error);
+    return null;
+  }
+};
+
+// Audio buffer-i səsləndirmək üçün funksiya
+const playAudioFromBuffer = async (audioBuffer: ArrayBuffer, onComplete?: () => void): Promise<void> => {
+  try {
+    // Audio Context yaradaq
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    
+    // Audio buffer decodlamaq
+    const decodedData = await audioContext.decodeAudioData(audioBuffer);
+    
+    // Audio Source node yaradaq
+    const source = audioContext.createBufferSource();
+    source.buffer = decodedData;
+    
+    // Audio çıxışına bağlayaq
+    source.connect(audioContext.destination);
+    
+    // Səsləndirməni başladaq
+    source.start(0);
+    
+    // Səsləndirmə bitdikdə bildiriş
+    source.onended = () => {
+      console.log("Səsləndirmə bitdi");
+      if (onComplete) {
+        onComplete();
+      }
+    };
+    
+  } catch (error) {
+    console.error("Audio buffer səsləndirmə xətası:", error);
+    if (onComplete) {
+      onComplete();
+    }
+  }
+};
 
 // AudioAnalyzer komponenti əlavə edirik
 interface AudioAnalyzerProps {
@@ -209,6 +275,76 @@ function App() {
     setIsListening(listening);
   }, []);
   
+  // Webhook JSON cavabını parse edib output sahəsini əldə edən funksiya
+  const parseAndSpeakResponse = useCallback(async (jsonString: string) => {
+    try {
+      // JSON cavabı parse et
+      const jsonResponse = JSON.parse(jsonString);
+      
+      if (jsonResponse && jsonResponse.output) {
+        const outputText = jsonResponse.output;
+        console.log("JSON cavabından çıxarılmış mətn:", outputText);
+        
+        // Mətni state'ə əlavə et
+        setAiResponse(outputText);
+        
+        // OpenAI ilə səsləndirməyə başla
+        const audioBuffer = await textToSpeech(outputText);
+        if (audioBuffer) {
+          setIsSpeaking(true);
+          
+          // Səsləndirmə bitdikdən sonra çağrılacaq funksiya
+          const onSpeechComplete = () => {
+            setIsSpeaking(false);
+            // Mikrofonu açaq
+            setTimeout(() => {
+              if (speechRecognitionRef.current) {
+                setIsListening(true);
+                speechRecognitionRef.current.startListening();
+                console.log('Nitq tanıma yenidən başladıldı (səsləndirmə bitdikdən sonra)');
+              }
+            }, 500);
+          };
+          
+          // Səsləndirməyi başladaq və bitdikdən sonra callback funksiyasını çağıraq
+          await playAudioFromBuffer(audioBuffer, onSpeechComplete);
+        } else {
+          console.error("Səsləndirmə üçün audio buffer yaradıla bilmədi");
+          setIsSpeaking(false);
+          
+          // Səsləndirmə xətası olsa da dinləməni başla
+          setTimeout(() => {
+            if (speechRecognitionRef.current) {
+              setIsListening(true);
+              speechRecognitionRef.current.startListening();
+              console.log('Nitq tanıma yenidən başladıldı (səsləndirmə xətasından sonra)');
+            }
+          }, 500);
+        }
+      } else {
+        console.error("JSON cavabında 'output' sahəsi tapılmadı:", jsonString);
+        setIsSpeaking(false);
+      }
+    } catch (error) {
+      console.error("JSON cavabını parse etmə xətası:", error);
+      console.error("Orjinal mətn:", jsonString);
+      setIsSpeaking(false);
+    }
+  }, []);
+  
+  // Handle failures when webhook doesn't work
+  const handleWebhookFailure = useCallback(() => {
+    console.error("Webhook communication failed");
+    setIsSpeaking(false);
+    
+    // Resume speech recognition after failure
+    setTimeout(() => {
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.startListening();
+      }
+    }, 500);
+  }, []);
+  
   // Handle speech recognition result
   const handleSpeechResult = useCallback(async (text: string) => {
     // İlk olaraq əmin olaq ki, console işləyir
@@ -321,315 +457,18 @@ function App() {
             
             if (xhr.status === 200) {
               try {
-                // Get the audio blob
-                const audioBlob = xhr.response;
-                console.info('Audio blob alındı, ölçüsü:', audioBlob.size);
+                // Webhook-dən gələn JSON mətnini əldə et
+                const responseText = xhr.responseText;
+                console.info('Webhook-dən mətn cavabı alındı:', responseText);
                 
-                // Səs blob-unu state-də saxlayırıq vizualizasiya üçün
-                setCurrentAudioBlob(audioBlob);
+                // Məlumatı işləmə və konsola çap etmə
+                console.log("%c 🤖 AI Cavabı (JSON):", "background: #9C27B0; color: white; padding: 5px; border-radius: 5px; font-weight: bold;", responseText);
                 
-                // İNDİ BURAYA GreetingMessage-dakı KİMİ AUDİO ANALİZ METODU ƏLAVƏ EDİRİK
-                console.log("🔊 SPEECH RECOGNITION WEBHOOK AUDIO ANALIZ BAŞLANĞICI");
-                
-                // Əvvəlcə mövcud audio əlaqələrini təmizləyək
-                if (globalAudioElement) {
-                  try {
-                    globalAudioElement.pause();
-                    if (globalAudioElement.parentNode) {
-                      globalAudioElement.parentNode.removeChild(globalAudioElement);
-                    }
-                    console.log("Əvvəlki audio element təmizləndi");
-                  } catch (err) {
-                    console.warn("Əvvəlki audio elementi təmizləmə xətası:", err);
-                  }
-                }
-                
-                if (globalAudioContext && globalAudioContext.state !== 'closed') {
-                  try {
-                    await globalAudioContext.close();
-                    console.log("Əvvəlki audio kontekst bağlandı");
-                  } catch (err) {
-                    console.warn("Əvvəlki audio konteksti bağlama xətası:", err);
-                  }
-                }
-                
-                // Səs URL yaradaq
-                const audioUrl = URL.createObjectURL(audioBlob);
-                
-                // Audio konteksti yaradaq
-                const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-                globalAudioContext = audioCtx;
-                
-                // Analiz node'u yaradaq
-                const analyser = audioCtx.createAnalyser();
-                analyser.fftSize = 2048; // Daha detallı analiz
-                const bufferLength = analyser.frequencyBinCount;
-                const dataArray = new Uint8Array(bufferLength);
-                
-                // Unikal nömrəni saxlayaq 
-                const currentAudioNumber = currentAnalysisNumber;
-                console.log(`Nitq tanıma səs faylı №${currentAudioNumber} analiz olunmağa başlanır`);
-                
-                // HTML-də göstərmək üçün audio elementi yaradaq
-                const audioElement = document.createElement('audio');
-                audioElement.src = audioUrl;
-                audioElement.style.display = 'none'; // Gizli saxlayaq
-                audioElement.volume = 1.0; // Tam səs
-                document.body.appendChild(audioElement);
-                globalAudioElement = audioElement;
-                
-                // Audio source yaradaq
-                const source = audioCtx.createMediaElementSource(audioElement);
-                source.connect(analyser);
-                analyser.connect(audioCtx.destination);
-                
-                // Audio yükləndikdə və analiz başladıqda
-                audioElement.onloadeddata = () => {
-                  console.log("🎧 Audio yükləndi, davamlılıq:", audioElement.duration.toFixed(2) + "s");
-                };
-                
-                // Audio başladıqda
-                audioElement.onplay = () => {
-                  console.log("🎵 Səsləndirmə başladı");
-                  setIsSpeaking(true);
-                  
-                  // Analiz funksiyasını təyin edək
-                  let frameCount = 0;
-                  
-                  const runAnalysis = () => {
-                    if (!audioElement || audioElement.paused || audioElement.ended) {
-                      console.log("🎵 Səsləndirmə bitdi");
-                      return;
-                    }
-                    
-                    // Frekans datasını alaq
-                    analyser.getByteFrequencyData(dataArray);
-                    
-                    // Səs səviyyəsini hesablayaq (0-255 arası)
-                    let sum = 0;
-                    for (let i = 0; i < bufferLength; i++) {
-                      sum += dataArray[i];
-                    }
-                    const volume = sum / bufferLength;
-                    
-                    // İlk 30 frame-i və sonra hər 10 frame-dən birini loq edək
-                    if (frameCount < 30 || frameCount % 10 === 0) {
-                      // Bas/orta/yüksək tezlikləri hesablayaq
-                      const bassEnd = Math.floor(bufferLength * 0.1) || 1; // 0-dan böyük olmasını təmin edirik
-                      const midEnd = Math.floor(bufferLength * 0.5) || 2; // 0-dan böyük olmasını təmin edirik
-                      
-                      let bassTotal = 0, midTotal = 0, trebleTotal = 0;
-                      
-                      // Diapazonu yoxlamaq tələb olunur
-                      const validBassEnd = Math.min(bassEnd, bufferLength);
-                      const validMidEnd = Math.min(midEnd, bufferLength);
-                      
-                      for (let i = 0; i < validBassEnd; i++) {
-                        bassTotal += dataArray[i] || 0;
-                      }
-                      for (let i = validBassEnd; i < validMidEnd; i++) {
-                        midTotal += dataArray[i] || 0;
-                      }
-                      for (let i = validMidEnd; i < bufferLength; i++) {
-                        trebleTotal += dataArray[i] || 0;
-                      }
-                      
-                      // NaN və Infinity qarşısını almaq üçün 0-a bölünməni yoxlayırıq
-                      const bassAvg = validBassEnd > 0 ? (bassTotal / validBassEnd) : 0;
-                      const midAvg = (validMidEnd - validBassEnd) > 0 ? (midTotal / (validMidEnd - validBassEnd)) : 0;
-                      const trebleAvg = (bufferLength - validMidEnd) > 0 ? (trebleTotal / (bufferLength - validMidEnd)) : 0;
-                      
-                      // Yeni birləşdirilmiş mesaj, sadə formatda
-                      console.log(`Audio analiz: Ümumi səviyyə=${safeFixed(volume, 2)}, Bas=${safeFixed(bassAvg, 1)}, Orta=${safeFixed(midAvg, 1)}, Yüksək=${safeFixed(trebleAvg, 1)}, No=${currentAudioNumber}`);
-                    }
-                    
-                    // Lip sync dəyəri üçün təkmilləşdirilmiş hesablama
-                    // İnsan danışıq səslərinin ən yaxşı tutulduğu orta tezliklərə əlavə ağırlıq veririk
-                    let speechVolume = 0;
-                    const lowFreqWeight = 0.6;  // Aşağı tezliklər (bas səslər)
-                    const midFreqWeight = 1.5;  // Orta tezliklər (insan danışığı)
-                    const highFreqWeight = 0.4; // Yüksək tezliklər
-                    
-                    // Daha dəqiq tezlik bölgüsü
-                    const lowEnd = Math.floor(bufferLength * 0.1);  // Aşağı tezliklərin sonu
-                    const midEnd = Math.floor(bufferLength * 0.6);  // Orta tezliklərin sonu
-                    
-                    // Ağırlıqlı ortalama ilə səs səviyyəsini hesablayırıq
-                    let totalWeight = 0;
-                    for (let i = 0; i < lowEnd; i++) {
-                      speechVolume += dataArray[i] * lowFreqWeight;
-                      totalWeight += lowFreqWeight;
-                    }
-                    
-                    for (let i = lowEnd; i < midEnd; i++) {
-                      speechVolume += dataArray[i] * midFreqWeight;
-                      totalWeight += midFreqWeight;
-                    }
-                    
-                    for (let i = midEnd; i < bufferLength; i++) {
-                      speechVolume += dataArray[i] * highFreqWeight;
-                      totalWeight += highFreqWeight;
-                    }
-                    
-                    // Orta səs səviyyəsini hesablayırıq
-                    if (totalWeight > 0) {
-                      speechVolume = speechVolume / totalWeight;
-                    }
-                    
-                    // Səs səviyyəsini normalizasiya edirik və səs həssaslığını artırırıq
-                    const minThreshold = 5;    // Minimum səs həddi (səssiz olsa belə minimum açıqlıq)
-                    const maxThreshold = 100;  // Maksimum səs həddi
-                    
-                    // Minimal səs həddini təmin edirik
-                    if (speechVolume < minThreshold) {
-                      speechVolume = minThreshold;
-                    }
-                    
-                    // Səs səviyyəsini 0-1 aralığına normallaşdırırıq
-                    let normalizedVolume = Math.min((speechVolume - minThreshold) / (maxThreshold - minThreshold), 1);
-                    
-                    // Əyri funksiyası ilə lip sync hərəkətlərini daha təbii edirik
-                    normalizedVolume = Math.pow(normalizedVolume, 0.6);
-                    
-                    // Artıq frame-lərdə səs səviyyəsini hamarlayırıq
-                    const smoothingFactor = 0.25; // Kiçik dəyər daha hamar keçid deməkdir
-                    const currentLipSyncValue = window.previousLipSyncValue !== undefined 
-                      ? window.previousLipSyncValue * (1 - smoothingFactor) + normalizedVolume * smoothingFactor
-                      : normalizedVolume;
-                    
-                    // Əvvəlki dəyəri yadda saxlayırıq
-                    window.previousLipSyncValue = currentLipSyncValue;
-                    
-                    // Debug məlumatları (istəyə görə əlavə edilə bilər)
-                    if (frameCount % 30 === 0) {
-                      console.log(`LipSync: Raw=${normalizedVolume.toFixed(2)}, Smoothed=${currentLipSyncValue.toFixed(2)}`);
-                    }
-                    
-                    // Nəticəni state'ə yazırıq - əvvəlki kod
-                    // setLipSyncValue(normalizedVolume);
-                    // Təkmilləşdirilmiş kod
-                    setLipSyncValue(currentLipSyncValue);
-                    
-                    // Sonrakı frame-ə keçək
-                    frameCount++;
-                    requestAnimationFrame(runAnalysis);
-                  };
-                  
-                  // Analizi başladaq
-                  runAnalysis();
-                };
-                
-                // Audio bitdikdə
-                audioElement.onended = () => {
-                  console.log("🎵 Səsləndirmə tamamlandı");
-                  setIsSpeaking(false);
-                  setLipSyncValue(0);
-                  document.body.removeChild(audioElement);
-                  URL.revokeObjectURL(audioUrl);
-                  if (audioCtx.state !== 'closed') {
-                    try {
-                      audioCtx.close();
-                    } catch (err) {
-                      console.warn("AudioContext bağlama xətası:", err);
-                    }
-                  } else {
-                    console.log("AudioContext artıq bağlıdır, yenidən bağlamağa ehtiyac yoxdur");
-                  }
-                  
-                  // Mikrofonla dinləməni başladaq
-                  setTimeout(() => {
-                    if (speechRecognitionRef.current) {
-                      setIsListening(true);
-                      speechRecognitionRef.current.startListening();
-                      console.log('Nitq tanıma başladıldı');
-                    }
-                  }, 500);
-                };
-                
-                // Xəta halı
-                audioElement.onerror = (err) => {
-                  console.error("❌ Audio xətası:", err);
-                  document.body.removeChild(audioElement);
-                  URL.revokeObjectURL(audioUrl);
-                  if (audioCtx.state !== 'closed') {
-                    try {
-                      audioCtx.close();
-                    } catch (err) {
-                      console.warn("AudioContext bağlama xətası:", err);
-                    }
-                  } else {
-                    console.log("AudioContext artıq bağlıdır, yenidən bağlamağa ehtiyac yoxdur");
-                  }
-                  setIsSpeaking(false);
-                  
-                  // Mikrofonla dinləməni başladaq
-                  setTimeout(() => {
-                    if (speechRecognitionRef.current) {
-                      setIsListening(true);
-                      speechRecognitionRef.current.startListening();
-                    }
-                  }, 500);
-                };
-                
-                // İndi səsləndirməni başladaq
-                console.log("🎵 Audio.play çağırılır");
-                
-                // Analizi və səsləndirməni başladaq
-                try {
-                  console.warn("👂 Audio.play başlamazdan əvvəl audioElement:", 
-                    `readyState=${audioElement.readyState}, ` + 
-                    `networkState=${audioElement.networkState}, ` +
-                    `currentSrc=${audioElement.currentSrc.substring(0, 30)}...` +
-                    `blob type=${audioBlob.type}, size=${audioBlob.size} bytes`);
-                    
-                  await audioElement.play();
-                  console.warn("🎵 Audio.play uğurla başladı, paused=${audioElement.paused}");
-                  
-                  // Əlavə status məlumatı
-                  console.warn(`🔊 Audio elementinin statusu: duration=${audioElement.duration}s, muted=${audioElement.muted}, volume=${audioElement.volume}, paused=${audioElement.paused}`);
-                } catch (playError) {
-                  console.error("❌ Audio.play xətası:", playError);
-                  console.error("❌ Audio xəta detalları:", 
-                    `readyState=${audioElement.readyState}, ` + 
-                    `networkState=${audioElement.networkState}, ` +
-                    `error=${audioElement.error ? audioElement.error.code : 'yoxdur'}, ` +
-                    `error message=${audioElement.error ? audioElement.error.message : 'yoxdur'}`);
-                  
-                  // Blob məlumatlarını loq edək
-                  console.error("❌ Audio Blob detalları:", 
-                    `type=${audioBlob.type || 'təyin olunmayıb'}, ` +
-                    `size=${audioBlob.size} bytes, ` +
-                    `valid=${audioBlob.size > 0 ? 'bəli' : 'xeyr'}`);
-                  
-                  document.body.removeChild(audioElement);
-                  URL.revokeObjectURL(audioUrl);
-                  if (audioCtx.state !== 'closed') {
-                    try {
-                      audioCtx.close();
-                    } catch (err) {
-                      console.warn("AudioContext bağlama xətası:", err);
-                    }
-                  } else {
-                    console.log("AudioContext artıq bağlıdır, yenidən bağlamağa ehtiyac yoxdur");
-                  }
-                  setIsSpeaking(false);
-                  
-                  // Mikrofonla dinləməni başladaq
-                  setTimeout(() => {
-                    if (speechRecognitionRef.current) {
-                      setIsListening(true);
-                      speechRecognitionRef.current.startListening();
-                    }
-                  }, 500);
-                  
-                  throw playError; // Xətanı yuxarı ötürək ki, əsas try-catch bloku da onu tutsun
-                }
-                
-                // Set speaking state to true
-                setIsSpeaking(true);
-              } catch (audioError: any) {
-                console.info('Audio emalı xətası:', audioError);
-                console.error(`Audio emalı xətası: ${audioError.message || audioError}`);
+                // JSON-u parse et və səsləndir
+                await parseAndSpeakResponse(responseText);
+              } catch (textError: any) {
+                console.info('Mətn emalı xətası:', textError);
+                console.error(`Mətn emalı xətası: ${textError.message || textError}`);
                 handleWebhookFailure();
               }
             } else {
@@ -646,8 +485,8 @@ function App() {
             handleWebhookFailure();
           };
           
-          // Set response type to blob
-          xhr.responseType = 'blob';
+          // Response type-ı text olaraq dəyişdiririk (əvvəl blob idi)
+          xhr.responseType = 'text';
           
           // Send the request
           const data = JSON.stringify({
@@ -686,20 +525,7 @@ function App() {
         speechRecognitionRef.current.startListening();
       }
     }
-  }, []);
-  
-  // Handle failures when webhook doesn't work
-  const handleWebhookFailure = useCallback(() => {
-    console.error("Webhook communication failed");
-    setIsSpeaking(false);
-    
-    // Resume speech recognition after failure
-    setTimeout(() => {
-      if (speechRecognitionRef.current) {
-        speechRecognitionRef.current.startListening();
-      }
-    }, 500);
-  }, []);
+  }, [parseAndSpeakResponse, handleWebhookFailure]);
   
   // Start speaking
   const startSpeaking = useCallback((text: string) => {
@@ -1460,326 +1286,19 @@ function App() {
               try {
                 console.log('Successfully sent greeting to webhook, processing response');
                 
-                // Set AI response in state
-                setAiResponse(greetingMessage);
+                // Webhook-dən mətn cavabı alırıq
+                const responseText = await webhookResponse.text();
+                console.log('Webhook-dən mətn cavabı alındı:', responseText);
                 
-                // Reset processing state
-                setIsProcessing(false);
+                // Məlumatı işləmə və konsola çap etmə
+                console.log("%c 🤖 AI Salamlama Cavabı (JSON):", "background: #9C27B0; color: white; padding: 5px; border-radius: 5px; font-weight: bold;", responseText);
                 
-                // Get audio response from webhook
-                const audioBlob = await webhookResponse.blob();
-                console.log('Received audio data from webhook for greeting');
-                
-                // BURDA AUDIO ANALIZ METODUMUZU ÇAĞIRAQ
-                console.log("🔊 GREETING WEBHOOK AUDIO ANALIZ BAŞLANĞICI");
-                
-                // Əvvəlcə mövcud audio əlaqələrini təmizləyək
-                if (globalAudioElement) {
-                  try {
-                    globalAudioElement.pause();
-                    if (globalAudioElement.parentNode) {
-                      globalAudioElement.parentNode.removeChild(globalAudioElement);
-                    }
-                    console.log("Əvvəlki audio element təmizləndi (greeting)");
-                  } catch (err) {
-                    console.warn("Əvvəlki audio elementi təmizləmə xətası:", err);
-                  }
-                }
-                
-                if (globalAudioContext && globalAudioContext.state !== 'closed') {
-                  try {
-                    await globalAudioContext.close();
-                    console.log("Əvvəlki audio kontekst bağlandı (greeting)");
-                  } catch (err) {
-                    console.warn("Əvvəlki audio konteksti bağlama xətası:", err);
-                  }
-                }
-                
-                // Create audio URL
-                const audioUrl = URL.createObjectURL(audioBlob);
-                
-                // Audio konteksti yaradaq
-                const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-                globalAudioContext = audioCtx;
-                
-                // Analiz node'u yaradaq
-                const analyser = audioCtx.createAnalyser();
-                analyser.fftSize = 2048; // Daha detallı analiz
-                const bufferLength = analyser.frequencyBinCount;
-                const dataArray = new Uint8Array(bufferLength);
-                
-                // Səs faylına unikal nömrə təyin etmirik, əvvəlcədən generasiya edilən nömrəni istifadə edirik
-                const currentAudioNumber = currentAnalysisNumber;
-                console.log(`Greeting səs faylı №${currentAudioNumber} analiz olunmağa başlanır`);
-                
-                // HTML-də göstərmək üçün audio elementi yaradaq
-                const audioElement = document.createElement('audio');
-                audioElement.src = audioUrl;
-                audioElement.style.display = 'none'; // Gizli saxlayaq
-                audioElement.volume = 1.0; // Tam səs
-                document.body.appendChild(audioElement);
-                globalAudioElement = audioElement;
-                
-                // Audio source yaradaq
-                const source = audioCtx.createMediaElementSource(audioElement);
-                source.connect(analyser);
-                analyser.connect(audioCtx.destination);
-                
-                // Audio yükləndikdə və analiz başladıqda
-                audioElement.onloadeddata = () => {
-                  console.log("🎧 Audio yükləndi, davamlılıq:", audioElement.duration.toFixed(2) + "s");
-                };
-                
-                // Audio başladıqda
-                audioElement.onplay = () => {
-                  console.log("🎵 Səsləndirmə başladı");
-                  setIsSpeaking(true);
-                  
-                  // Analiz funksiyasını təyin edək
-                  let frameCount = 0;
-                  
-                  const runAnalysis = () => {
-                    if (!audioElement || audioElement.paused || audioElement.ended) {
-                      console.log("🎵 Səsləndirmə bitdi");
-                      return;
-                    }
-                    
-                    // Frekans datasını alaq
-                    analyser.getByteFrequencyData(dataArray);
-                    
-                    // Səs səviyyəsini hesablayaq (0-255 arası)
-                    let sum = 0;
-                    for (let i = 0; i < bufferLength; i++) {
-                      sum += dataArray[i];
-                    }
-                    const volume = sum / bufferLength;
-                    
-                    // İlk 30 frame-i və sonra hər 10 frame-dən birini loq edək
-                    if (frameCount < 30 || frameCount % 10 === 0) {
-                      // Bas/orta/yüksək tezlikləri hesablayaq
-                      const bassEnd = Math.floor(bufferLength * 0.1) || 1; // 0-dan böyük olmasını təmin edirik
-                      const midEnd = Math.floor(bufferLength * 0.5) || 2; // 0-dan böyük olmasını təmin edirik
-                      
-                      let bassTotal = 0, midTotal = 0, trebleTotal = 0;
-                      
-                      // Diapazonu yoxlamaq tələb olunur
-                      const validBassEnd = Math.min(bassEnd, bufferLength);
-                      const validMidEnd = Math.min(midEnd, bufferLength);
-                      
-                      for (let i = 0; i < validBassEnd; i++) {
-                        bassTotal += dataArray[i] || 0;
-                      }
-                      for (let i = validBassEnd; i < validMidEnd; i++) {
-                        midTotal += dataArray[i] || 0;
-                      }
-                      for (let i = validMidEnd; i < bufferLength; i++) {
-                        trebleTotal += dataArray[i] || 0;
-                      }
-                      
-                      // NaN və Infinity qarşısını almaq üçün 0-a bölünməni yoxlayırıq
-                      const bassAvg = validBassEnd > 0 ? (bassTotal / validBassEnd) : 0;
-                      const midAvg = (validMidEnd - validBassEnd) > 0 ? (midTotal / (validMidEnd - validBassEnd)) : 0;
-                      const trebleAvg = (bufferLength - validMidEnd) > 0 ? (trebleTotal / (bufferLength - validMidEnd)) : 0;
-                      
-                      // Yeni birləşdirilmiş mesaj, sadə formatda
-                      console.log(`Audio analiz: Ümumi səviyyə=${safeFixed(volume, 2)}, Bas=${safeFixed(bassAvg, 1)}, Orta=${safeFixed(midAvg, 1)}, Yüksək=${safeFixed(trebleAvg, 1)}, No=${currentAudioNumber}`);
-                    }
-                    
-                    // Lip sync dəyəri üçün təkmilləşdirilmiş hesablama
-                    // İnsan danışıq səslərinin ən yaxşı tutulduğu orta tezliklərə əlavə ağırlıq veririk
-                    let speechVolume = 0;
-                    const lowFreqWeight = 0.6;  // Aşağı tezliklər (bas səslər)
-                    const midFreqWeight = 1.5;  // Orta tezliklər (insan danışığı)
-                    const highFreqWeight = 0.4; // Yüksək tezliklər
-                    
-                    // Daha dəqiq tezlik bölgüsü
-                    const lowEnd = Math.floor(bufferLength * 0.1);  // Aşağı tezliklərin sonu
-                    const midEnd = Math.floor(bufferLength * 0.6);  // Orta tezliklərin sonu
-                    
-                    // Ağırlıqlı ortalama ilə səs səviyyəsini hesablayırıq
-                    let totalWeight = 0;
-                    for (let i = 0; i < lowEnd; i++) {
-                      speechVolume += dataArray[i] * lowFreqWeight;
-                      totalWeight += lowFreqWeight;
-                    }
-                    
-                    for (let i = lowEnd; i < midEnd; i++) {
-                      speechVolume += dataArray[i] * midFreqWeight;
-                      totalWeight += midFreqWeight;
-                    }
-                    
-                    for (let i = midEnd; i < bufferLength; i++) {
-                      speechVolume += dataArray[i] * highFreqWeight;
-                      totalWeight += highFreqWeight;
-                    }
-                    
-                    // Orta səs səviyyəsini hesablayırıq
-                    if (totalWeight > 0) {
-                      speechVolume = speechVolume / totalWeight;
-                    }
-                    
-                    // Səs səviyyəsini normalizasiya edirik və səs həssaslığını artırırıq
-                    const minThreshold = 5;    // Minimum səs həddi (səssiz olsa belə minimum açıqlıq)
-                    const maxThreshold = 100;  // Maksimum səs həddi
-                    
-                    // Minimal səs həddini təmin edirik
-                    if (speechVolume < minThreshold) {
-                      speechVolume = minThreshold;
-                    }
-                    
-                    // Səs səviyyəsini 0-1 aralığına normallaşdırırıq
-                    let normalizedVolume = Math.min((speechVolume - minThreshold) / (maxThreshold - minThreshold), 1);
-                    
-                    // Əyri funksiyası ilə lip sync hərəkətlərini daha təbii edirik
-                    normalizedVolume = Math.pow(normalizedVolume, 0.6);
-                    
-                    // Artıq frame-lərdə səs səviyyəsini hamarlayırıq
-                    const smoothingFactor = 0.25; // Kiçik dəyər daha hamar keçid deməkdir
-                    const currentLipSyncValue = window.previousLipSyncValue !== undefined 
-                      ? window.previousLipSyncValue * (1 - smoothingFactor) + normalizedVolume * smoothingFactor
-                      : normalizedVolume;
-                    
-                    // Əvvəlki dəyəri yadda saxlayırıq
-                    window.previousLipSyncValue = currentLipSyncValue;
-                    
-                    // Debug məlumatları (istəyə görə əlavə edilə bilər)
-                    if (frameCount % 30 === 0) {
-                      console.log(`LipSync: Raw=${normalizedVolume.toFixed(2)}, Smoothed=${currentLipSyncValue.toFixed(2)}`);
-                    }
-                    
-                    // Nəticəni state'ə yazırıq - əvvəlki kod
-                    // setLipSyncValue(normalizedVolume);
-                    // Təkmilləşdirilmiş kod
-                    setLipSyncValue(currentLipSyncValue);
-                    
-                    // Sonrakı frame-ə keçək
-                    frameCount++;
-                    requestAnimationFrame(runAnalysis);
-                  };
-                  
-                  // Analizi başladaq
-                  runAnalysis();
-                };
-                
-                // Audio bitdikdə
-                audioElement.onended = () => {
-                  console.log("🎵 Səsləndirmə tamamlandı");
-                  setIsSpeaking(false);
-                  setLipSyncValue(0);
-                  document.body.removeChild(audioElement);
-                  URL.revokeObjectURL(audioUrl);
-                  if (audioCtx.state !== 'closed') {
-                    try {
-                      audioCtx.close();
-                    } catch (err) {
-                      console.warn("AudioContext bağlama xətası:", err);
-                    }
-                  } else {
-                    console.log("AudioContext artıq bağlıdır, yenidən bağlamağa ehtiyac yoxdur");
-                  }
-                  
-                  // Mikrofonla dinləməni başladaq
-                  setTimeout(() => {
-                    if (speechRecognitionRef.current) {
-                      setIsListening(true);
-                      speechRecognitionRef.current.startListening();
-                      console.log('Nitq tanıma başladıldı');
-                    }
-                  }, 500);
-                };
-                
-                // Xəta halı
-                audioElement.onerror = (err) => {
-                  console.error("❌ Audio xətası:", err);
-                  document.body.removeChild(audioElement);
-                  URL.revokeObjectURL(audioUrl);
-                  if (audioCtx.state !== 'closed') {
-                    try {
-                      audioCtx.close();
-                    } catch (err) {
-                      console.warn("AudioContext bağlama xətası:", err);
-                    }
-                  } else {
-                    console.log("AudioContext artıq bağlıdır, yenidən bağlamağa ehtiyac yoxdur");
-                  }
-                  setIsSpeaking(false);
-                  
-                  // Mikrofonla dinləməni başladaq
-                  setTimeout(() => {
-                    if (speechRecognitionRef.current) {
-                      setIsListening(true);
-                      speechRecognitionRef.current.startListening();
-                    }
-                  }, 500);
-                };
-                
-                // İndi səsləndirməni başladaq
-                console.log("🎵 Audio.play çağırılır");
-                
-                // Analizi və səsləndirməni başladaq
-                try {
-                  console.warn("👂 Audio.play başlamazdan əvvəl audioElement:", 
-                    `readyState=${audioElement.readyState}, ` + 
-                    `networkState=${audioElement.networkState}, ` +
-                    `currentSrc=${audioElement.currentSrc.substring(0, 30)}...` +
-                    `blob type=${audioBlob.type}, size=${audioBlob.size} bytes`);
-                    
-                  await audioElement.play();
-                  console.warn("🎵 Audio.play uğurla başladı, paused=${audioElement.paused}");
-                  
-                  // Əlavə status məlumatı
-                  console.warn(`🔊 Audio elementinin statusu: duration=${audioElement.duration}s, muted=${audioElement.muted}, volume=${audioElement.volume}, paused=${audioElement.paused}`);
-                } catch (playError) {
-                  console.error("❌ Audio.play xətası:", playError);
-                  console.error("❌ Audio xəta detalları:", 
-                    `readyState=${audioElement.readyState}, ` + 
-                    `networkState=${audioElement.networkState}, ` +
-                    `error=${audioElement.error ? audioElement.error.code : 'yoxdur'}, ` +
-                    `error message=${audioElement.error ? audioElement.error.message : 'yoxdur'}`);
-                  
-                  // Blob məlumatlarını loq edək
-                  console.error("❌ Audio Blob detalları:", 
-                    `type=${audioBlob.type || 'təyin olunmayıb'}, ` +
-                    `size=${audioBlob.size} bytes, ` +
-                    `valid=${audioBlob.size > 0 ? 'bəli' : 'xeyr'}`);
-                  
-                  document.body.removeChild(audioElement);
-                  URL.revokeObjectURL(audioUrl);
-                  if (audioCtx.state !== 'closed') {
-                    try {
-                      audioCtx.close();
-                    } catch (err) {
-                      console.warn("AudioContext bağlama xətası:", err);
-                    }
-                  } else {
-                    console.log("AudioContext artıq bağlıdır, yenidən bağlamağa ehtiyac yoxdur");
-                  }
-                  setIsSpeaking(false);
-                  
-                  // Mikrofonla dinləməni başladaq
-                  setTimeout(() => {
-                    if (speechRecognitionRef.current) {
-                      setIsListening(true);
-                      speechRecognitionRef.current.startListening();
-                    }
-                  }, 500);
-                  
-                  throw playError; // Xətanı yuxarı ötürək ki, əsas try-catch bloku da onu tutsun
-                }
-                
-                // Set speaking state to true
-                setIsSpeaking(true);
-              } catch (error) {
-                console.error("❌ Audio analiz xətası:", error);
-                setIsSpeaking(false);
-                
-                // Mikrofonla dinləməni başladaq
-                setTimeout(() => {
-                  if (speechRecognitionRef.current) {
-                    setIsListening(true);
-                    speechRecognitionRef.current.startListening();
-                  }
-                }, 500);
+                // JSON-u parse et və səsləndir
+                await parseAndSpeakResponse(responseText);
+              } catch (textError: any) {
+                console.info('Mətn emalı xətası:', textError);
+                console.error(`Mətn emalı xətası: ${textError.message || textError}`);
+                handleWebhookFailure();
               }
             } else {
               console.error('Failed to send greeting to webhook');
@@ -1801,7 +1320,7 @@ function App() {
         })();
       }
     }
-  }, [faceDetected, detectedFace, isSpeaking, isProcessing, hasGreetingSent]);
+  }, [faceDetected, detectedFace, isSpeaking, isProcessing, hasGreetingSent, handleWebhookFailure, parseAndSpeakResponse]);
   
   // Face detection interval with better tracking
   useEffect(() => {
@@ -2016,7 +1535,7 @@ function App() {
         }
       };
     }
-  }, [isModelLoaded, currentCustomer, isSpeaking, isProcessing, recognizeCustomer, hasGreetingSent]);
+  }, [isModelLoaded, currentCustomer, isSpeaking, isProcessing, recognizeCustomer, hasGreetingSent, parseAndSpeakResponse]);
   
   // Force face detected for testing
   useEffect(() => {
