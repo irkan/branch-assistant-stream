@@ -1,0 +1,40 @@
+.scene-container {
+  position: absolute;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
+  z-index: 10; /* Lower z-index to be behind video */
+  top: 0;
+  left: 0;
+}
+
+.background-image {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-image: url('../images/a1-scaled.jpg');
+  background-size: cover;
+  background-position: center;
+  opacity: 1;
+  z-index: 1;
+}
+
+.canvas-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 15; /* Higher than scene container but lower than video */
+}
+
+/* Custom styling for loading indicator in 3D space */
+.loading-indicator-3d {
+  transform: scale(1.5);
+  background-color: white;
+  border-radius: 12px;
+  padding: 5px 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
