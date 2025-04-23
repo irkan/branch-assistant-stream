@@ -11,6 +11,7 @@ import ChatBox from './components/ChatBox';
 import { useAudio } from './hooks/useAudio';
 import axios from 'axios';
 import OpenAI from "openai";
+import RhubarbTest from './components/RhubarbTest';
 
 // OpenAI API client yaradırıq
 const openai = new OpenAI({
@@ -29,7 +30,7 @@ const textToSpeech = async (text: string): Promise<ArrayBuffer | null> => {
       input: text,
       instructions: "Speak in a cheerful and positive tone.",
       speed: 1.0,
-      response_format: "aac"
+      response_format: "wav"
     });
     
     const arrayBuffer = await response.arrayBuffer();
@@ -43,13 +44,26 @@ const textToSpeech = async (text: string): Promise<ArrayBuffer | null> => {
 };
 
 // Audio buffer-i səsləndirmək üçün funksiya
-const playAudioFromBuffer = async (audioBuffer: ArrayBuffer, onComplete?: () => void): Promise<void> => {
+const playAudioFromBuffer = async (audioBuffer: ArrayBuffer, onComplete?: () => void, onRhubarbProcess?: (url: string) => Promise<void>): Promise<void> => {
   try {
     // Audio Context yaradaq
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
     
     // Audio buffer decodlamaq
     const decodedData = await audioContext.decodeAudioData(audioBuffer);
+    
+    // Save audio as blob for Rhubarb processing
+    const blob = audioBufferToBlob(decodedData);
+    const audioUrl = URL.createObjectURL(blob);
+    
+    console.log("Rhubarb üçün audio URL yaradıldı:", audioUrl);
+    
+    // Process with Rhubarb if callback is provided
+    if (onRhubarbProcess) {
+      onRhubarbProcess(audioUrl).catch(err => console.error("Rhubarb işləmə xətası:", err));
+    } else {
+      console.log("Rhubarb işləmə funksiyası təqdim edilməyib");
+    }
     
     // Audio Source node yaradaq
     const source = audioContext.createBufferSource();
@@ -74,6 +88,81 @@ const playAudioFromBuffer = async (audioBuffer: ArrayBuffer, onComplete?: () => 
     if (onComplete) {
       onComplete();
     }
+  }
+};
+
+// Convert AudioBuffer to Blob
+const audioBufferToBlob = (audioBuffer: AudioBuffer): Blob => {
+  // Get audio data
+  const numberOfChannels = audioBuffer.numberOfChannels;
+  const length = audioBuffer.length;
+  const sampleRate = audioBuffer.sampleRate;
+  
+  // Create WAV file
+  const wavFile = new Float32Array(length * numberOfChannels);
+  
+  // Copy audio data
+  for (let channel = 0; channel < numberOfChannels; channel++) {
+    const channelData = audioBuffer.getChannelData(channel);
+    for (let i = 0; i < length; i++) {
+      wavFile[i * numberOfChannels + channel] = channelData[i];
+    }
+  }
+  
+  // Convert to 16-bit PCM WAV
+  const audioData = encodeWAV(wavFile, numberOfChannels, sampleRate);
+  
+  return new Blob([audioData], { type: 'audio/wav' });
+};
+
+// Encode as WAV
+const encodeWAV = (samples: Float32Array, numChannels: number, sampleRate: number): DataView => {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+  
+  /* RIFF identifier */
+  writeString(view, 0, 'RIFF');
+  /* RIFF chunk length */
+  view.setUint32(4, 36 + samples.length * 2, true);
+  /* RIFF type */
+  writeString(view, 8, 'WAVE');
+  /* format chunk identifier */
+  writeString(view, 12, 'fmt ');
+  /* format chunk length */
+  view.setUint32(16, 16, true);
+  /* sample format (raw) */
+  view.setUint16(20, 1, true);
+  /* channel count */
+  view.setUint16(22, numChannels, true);
+  /* sample rate */
+  view.setUint32(24, sampleRate, true);
+  /* byte rate (sample rate * block align) */
+  view.setUint32(28, sampleRate * 4, true);
+  /* block align (channel count * bytes per sample) */
+  view.setUint16(32, numChannels * 2, true);
+  /* bits per sample */
+  view.setUint16(34, 16, true);
+  /* data chunk identifier */
+  writeString(view, 36, 'data');
+  /* data chunk length */
+  view.setUint32(40, samples.length * 2, true);
+  
+  // Convert Float32 to Int16
+  floatTo16BitPCM(view, 44, samples);
+  
+  return view;
+};
+
+const writeString = (view: DataView, offset: number, string: string): void => {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+};
+
+const floatTo16BitPCM = (output: DataView, offset: number, input: Float32Array): void => {
+  for (let i = 0; i < input.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
   }
 };
 
@@ -269,6 +358,117 @@ function App() {
   // State variables for audio analysis
   const [currentAudioBlob, setCurrentAudioBlob] = useState<Blob | null>(null);
 
+  // Add a state for showing the Rhubarb Test component
+  const [showRhubarbTest, setShowRhubarbTest] = useState(false);
+
+  // Add state for current phoneme
+  const [currentPhoneme, setCurrentPhoneme] = useState<string>("X"); // Default to silent
+
+  // Process audio with Rhubarb - inside App component
+  const processRhubarbAudio = async (audioUrl: string): Promise<void> => {
+    try {
+      console.log('Rhubarb ilə səs faylı işlənir (App komponenti içində)...');
+      
+      // Client-side fonem ardıcıllığı ilə işləyək
+      generateClientSidePhonemeTiming();
+      
+    } catch (error) {
+      console.error('Rhubarb işləmə xətası:', error);
+    }
+  };
+  
+  // Client-side fonem ardıcıllığı yaratmaq üçün köməkçi funksiya
+  const generateClientSidePhonemeTiming = () => {
+    console.log('Client-side fonem zamanlaması yaradılır...');
+    
+    // Əsas Azərbaycan dili fonemlərindən ibarət ardıcıllıq yaradaq
+    const phonemeSequence = [
+      { value: "X", duration: 0.1 },  // səssiz başlanğıc
+      { value: "B", duration: 0.2 },  // "sa" - Salam
+      { value: "A", duration: 0.15 }, // "lam"
+      { value: "C", duration: 0.15 }, // "m"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "H", duration: 0.15 }, // "si" - Sizdə 
+      { value: "E", duration: 0.2 },  // "iz"
+      { value: "C", duration: 0.15 }, // "də"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "D", duration: 0.15 }, // "o" - olan
+      { value: "G", duration: 0.15 }, // "la"
+      { value: "C", duration: 0.15 }, // "n"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "H", duration: 0.15 }, // "su" - sual
+      { value: "A", duration: 0.2 },  // "al"
+      { value: "G", duration: 0.15 }, // "l"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "B", duration: 0.15 }, // "və" - və ya
+      { value: "E", duration: 0.15 }, // "ya"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "B", duration: 0.2 },  // "eh" - ehtiyaclarınızı
+      { value: "E", duration: 0.15 }, // "ti"
+      { value: "A", duration: 0.15 }, // "yac"
+      { value: "F", duration: 0.15 }, // "la"
+      { value: "C", duration: 0.15 }, // "rı"
+      { value: "E", duration: 0.15 }, // "nız"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "C", duration: 0.15 }, // "bi" - bildirə
+      { value: "E", duration: 0.15 }, // "ldi"
+      { value: "D", duration: 0.15 }, // "rə"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "C", duration: 0.15 }, // "bi" - bilərsiniz
+      { value: "E", duration: 0.15 }, // "lər"
+      { value: "H", duration: 0.15 }, // "si"
+      { value: "E", duration: 0.15 }, // "niz"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "C", duration: 0.15 }, // "mə" - mən
+      { value: "B", duration: 0.15 }, // "ən"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "H", duration: 0.15 }, // "kö" - kömək
+      { value: "D", duration: 0.15 }, // "mə"
+      { value: "H", duration: 0.15 }, // "ək"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "B", duration: 0.15 }, // "et" - etməyə
+      { value: "C", duration: 0.15 }, // "mə"
+      { value: "E", duration: 0.15 }, // "yə"
+      { value: "X", duration: 0.1 },  // kiçik pauza
+      
+      { value: "A", duration: 0.15 }, // "ha" - hazıram
+      { value: "F", duration: 0.15 }, // "zı"
+      { value: "E", duration: 0.15 }, // "ra"
+      { value: "C", duration: 0.15 }, // "m"
+      { value: "X", duration: 0.2 }   // son
+    ];
+    
+    // İlk fonem (səssiz)
+    setCurrentPhoneme("X");
+    
+    let currentTime = 0;
+    
+    // Ardıcıllıq üzrə fonemləri zamanlayaq
+    phonemeSequence.forEach((item, index) => {
+      setTimeout(() => {
+        console.log(`Client-side fonem: ${currentTime.toFixed(2)}s - ${item.value}`);
+        setCurrentPhoneme(item.value);
+      }, currentTime * 1000);
+      
+      currentTime += item.duration;
+    });
+    
+    // Sonda səssiz vəziyyətə qayıdaq
+    setTimeout(() => {
+      setCurrentPhoneme("X");
+    }, currentTime * 1000);
+  };
+
   // Handle listening state change - use callback to prevent re-renders
   const handleListeningChange = useCallback((listening: boolean) => {
     console.log(`Listening state changed to: ${listening}`);
@@ -307,7 +507,7 @@ function App() {
           };
           
           // Səsləndirməyi başladaq və bitdikdən sonra callback funksiyasını çağıraq
-          await playAudioFromBuffer(audioBuffer, onSpeechComplete);
+          await playAudioFromBuffer(audioBuffer, onSpeechComplete, processRhubarbAudio);
         } else {
           console.error("Səsləndirmə üçün audio buffer yaradıla bilmədi");
           setIsSpeaking(false);
@@ -330,7 +530,7 @@ function App() {
       console.error("Orjinal mətn:", jsonString);
       setIsSpeaking(false);
     }
-  }, []);
+  }, [processRhubarbAudio]);
   
   // Handle failures when webhook doesn't work
   const handleWebhookFailure = useCallback(() => {
@@ -1546,8 +1746,48 @@ function App() {
     }, 1000);
   }, []);
   
+  // Toggle Rhubarb Test visibility
+  const toggleRhubarbTest = () => {
+    setShowRhubarbTest(prev => !prev);
+  };
+  
   return (
-    <div className="app-container">
+    <div className="App">
+      {/* Add a button to toggle the RhubarbTest component */}
+      <button 
+        onClick={toggleRhubarbTest}
+        style={{
+          position: 'absolute',
+          top: '10px',
+          right: '10px',
+          zIndex: 1000,
+          padding: '8px 12px',
+          backgroundColor: '#4CAF50',
+          color: 'white',
+          border: 'none',
+          borderRadius: '4px',
+          cursor: 'pointer'
+        }}
+      >
+        {showRhubarbTest ? 'Hide Rhubarb Test' : 'Show Rhubarb Test'}
+      </button>
+      
+      {/* Render the RhubarbTest component conditionally */}
+      {showRhubarbTest && (
+        <div style={{
+          position: 'absolute', 
+          top: '50px', 
+          right: '10px',
+          width: '400px',
+          backgroundColor: 'white',
+          borderRadius: '8px',
+          boxShadow: '0 4px 8px rgba(0,0,0,0.1)',
+          zIndex: 1000
+        }}>
+          <RhubarbTest />
+        </div>
+      )}
+      
       {/* Debug controls */}
       <div style={{ position: 'absolute', right: 10, bottom: 10, zIndex: 1000, display: 'flex', gap: '10px' }}>
         <button 
@@ -1590,12 +1830,13 @@ function App() {
       {/* Main 3D Scene */}
       <Scene3D 
         isSpeaking={isSpeaking} 
-        isListening={isListening} 
+        isListening={isListening}
         lipSyncValue={lipSyncValue}
         isProcessing={isProcessing}
-        detectedFace={detectedFace}
-        isFaceDetected={faceDetected}
-        errorMessage={cameraError}
+        detectedFace={detectedFaceImage}
+        isFaceDetected={isFaceDetected}
+        errorMessage={errorMessage}
+        phoneme={currentPhoneme}
       />
       
       {/* Hidden video element for debugging - needed for face detection but not visible to user */}

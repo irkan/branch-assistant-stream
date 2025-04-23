@@ -9,6 +9,7 @@ type AnimatedCharacterProps = {
   scale?: [number, number, number];
   rotation?: [number, number, number];
   lipSyncValue?: number;
+  phoneme?: string;
 } & React.JSX.IntrinsicElements['group'];
 
 export function AnimatedCharacter(props: AnimatedCharacterProps) {
@@ -19,6 +20,9 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
   // Animation action references
   const standActionRef = useRef<THREE.AnimationAction | null>(null)
   const talkActionRef = useRef<THREE.AnimationAction | null>(null)
+  
+  // Current phoneme state
+  const [currentPhoneme, setCurrentPhoneme] = useState<string | undefined>(undefined)
   
   // Load model
   const { scene } = useGLTF('/models/ayla/Ayla.glb')
@@ -34,6 +38,14 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
   // Animation related refs
   const mixerRef = useRef<THREE.AnimationMixer | null>(null)
   const [isModelReady, setIsModelReady] = useState(false)
+  
+  // Update phoneme when prop changes
+  useEffect(() => {
+    if (props.phoneme !== undefined) {
+      setCurrentPhoneme(props.phoneme);
+      console.log('Phoneme value updated:', props.phoneme);
+    }
+  }, [props.phoneme]);
   
   // Modelin yüklənməsini izləməyə kömək edəcək bir state
   useEffect(() => {
@@ -107,6 +119,26 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
     }
   }, [clone, standMotion.animations, talkMotion.animations, talkMotion1.animations])
   
+  // Map phoneme to mouth shape value
+  const getPhonemeValue = (phoneme: string | undefined): number => {
+    if (!phoneme) return 0;
+    
+    // Phoneme values based on Rhubarb phoneme set (A B C D E F G H X)
+    // Daha yaxşı animasiya üçün hər fonemin optimal ağız açıqlığı dəyəri
+    switch (phoneme) {
+      case 'A': return 0.85; // A - açıq ağız (a, ə səsləri) - "a" kimi
+      case 'B': return 0.6;  // B - yarı açıq ağız (e, ə səsləri) - "e" kimi
+      case 'C': return 0.2;  // C - qapalı ağız (m, b, p səsləri) - "m" kimi
+      case 'D': return 0.65; // D - dairəvi ağız (o, u səsləri) - "o" kimi
+      case 'E': return 0.35; // E - dar ağız (i, ı səsləri) - "i" kimi
+      case 'F': return 0.45; // F - dişlər arası (f, v səsləri) - "f" kimi
+      case 'G': return 0.4;  // G - "l" səsi - dil dişlərə toxunur
+      case 'H': return 0.5;  // H - nəfəsli səslər (h, x) - "h" kimi
+      case 'X': return 0.0;  // X - səssiz, ağız bağlı
+      default: return 0.0;   // Tanınmayan fonem - default olaraq qapalı
+    }
+  };
+  
   // Update animation in frame loop - lip sync dəyərinə görə animasiyaları qarışdıraq
   useFrame((state, delta) => {
     // Update animation mixer
@@ -114,11 +146,19 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
       mixerRef.current.update(delta)
     }
     
+    // Get lip sync value from either phoneme or direct lipSyncValue
+    let lipSyncValue = props.lipSyncValue || 0;
+    
+    // If phoneme is provided, override the lipSyncValue with phoneme-derived value
+    if (currentPhoneme) {
+      lipSyncValue = getPhonemeValue(currentPhoneme);
+    }
+    
     // Lip sync dəyəri varsa animasiyaları qarışdıraq
-    if (standActionRef.current && talkActionRef.current && typeof props.lipSyncValue === 'number') {
+    if (standActionRef.current && talkActionRef.current) {
       // Danışma animasiyası üçün ağırlığı hesablayın
       // Səs səviyyəsi arıqca danışma animasiyası daha çox görünəcək
-      let talkWeight = props.lipSyncValue;
+      let talkWeight = lipSyncValue;
       
       // Səlis keçid üçün interpolasiya edək
       const currentTalkWeight = talkActionRef.current.getEffectiveWeight();
@@ -135,12 +175,12 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
       
       // Loqlar - nadir hallarda göstərmək üçün
       if (Math.random() < 0.005) {
-        console.log(`Animation weights - Stand: ${standActionRef.current.getEffectiveWeight().toFixed(2)}, Talk: ${talkActionRef.current.getEffectiveWeight().toFixed(2)}, LipSync value: ${props.lipSyncValue.toFixed(2)}`);
+        console.log(`Animation weights - Stand: ${standActionRef.current.getEffectiveWeight().toFixed(2)}, Talk: ${talkActionRef.current.getEffectiveWeight().toFixed(2)}, LipSync value: ${lipSyncValue.toFixed(2)}${currentPhoneme ? `, Phoneme: ${currentPhoneme}` : ''}`);
       }
     }
     
     // Morph targetləri də eyni zamanda tətbiq edək - lip sync dəyərinə görə
-    if (isModelReady && meshRef.current && typeof props.lipSyncValue === 'number') {
+    if (isModelReady && meshRef.current) {
       const mesh = meshRef.current
       
       // Model spesifik morph target-lər
@@ -148,19 +188,19 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
       const vOpenIndex = mesh.morphTargetDictionary?.["V_Open"] ?? -1;
       
       // Lip sync dəyəri
-      const lipSyncValue = props.lipSyncValue || 0;
+      const lipSyncValueMorph = lipSyncValue;
       
       // Çənə açılması
       if (jawOpenIndex !== -1 && mesh.morphTargetInfluences) {
         const currentValue = mesh.morphTargetInfluences[jawOpenIndex] || 0;
-        const targetValue = lipSyncValue * 0.8; // 80% maksimum 
+        const targetValue = lipSyncValueMorph * 0.8; // 80% maksimum 
         mesh.morphTargetInfluences[jawOpenIndex] = THREE.MathUtils.lerp(currentValue, targetValue, 0.2);
       }
       
       // Ağız açılması
       if (vOpenIndex !== -1 && mesh.morphTargetInfluences) {
         const currentValue = mesh.morphTargetInfluences[vOpenIndex] || 0;
-        const targetValue = lipSyncValue * 0.6; // 60% maksimum
+        const targetValue = lipSyncValueMorph * 0.6; // 60% maksimum
         mesh.morphTargetInfluences[vOpenIndex] = THREE.MathUtils.lerp(currentValue, targetValue, 0.2);
       }
     }

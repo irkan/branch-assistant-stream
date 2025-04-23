@@ -24,6 +24,7 @@ interface Scene3DProps {
   detectedFace?: string | null; // Base64 string of detected face
   isFaceDetected: boolean;
   errorMessage?: string | null; // Add error message prop
+  phoneme?: string; // Add phoneme prop
 }
 
 // Comment out the CameraLogger component
@@ -103,7 +104,8 @@ const Scene3D: React.FC<Scene3DProps> = ({
   isProcessing,
   detectedFace,
   isFaceDetected,
-  errorMessage
+  errorMessage,
+  phoneme
 }) => {
   const characterRef = useRef<THREE.Group>(null);
   const [overlayVisible, setOverlayVisible] = useState(true);
@@ -332,6 +334,7 @@ const Scene3D: React.FC<Scene3DProps> = ({
                 scale={[1.6, 1.6, 1.6]} 
                 rotation={[0, 0.2, 0]}
                 lipSyncValue={lipSyncValue}
+                phoneme={phoneme}
               />
               
               {/* Keep the marker for debug purposes */}
