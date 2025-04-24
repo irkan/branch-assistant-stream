@@ -613,7 +613,7 @@ export function Character(props: CharacterProps) {
 
 // Preload model with error handling
 try {
-  useGLTF.preload('/models/ayla/Ayla.glb');
+  useGLTF.preload('/models/ayla/Ayla_Viseme.glb');
   // Don't need to log successful preloads
   // console.log('Preloaded Ayla model')
 } catch (error) {

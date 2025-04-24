@@ -23,9 +23,13 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
   
   // Current phoneme state
   const [currentPhoneme, setCurrentPhoneme] = useState<string | undefined>(undefined)
+  // Fonem dəyişimini izləmək üçün ref
+  const prevPhonemeRef = useRef<string | undefined>(undefined)
+  // Son dəfə log göstərilən zaman
+  const lastLogTimeRef = useRef<number>(0)
   
   // Load model
-  const { scene } = useGLTF('/models/ayla/Ayla.glb')
+  const { scene } = useGLTF('/models/ayla/Ayla_Viseme.glb')
   
   // Clone the scene for animations
   const clone = React.useMemo(() => SkeletonUtils.clone(scene), [scene])
@@ -43,7 +47,7 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
   useEffect(() => {
     if (props.phoneme !== undefined) {
       setCurrentPhoneme(props.phoneme);
-      console.log('Phoneme value updated:', props.phoneme);
+      // console.log('Phoneme value updated:', props.phoneme);
     }
   }, [props.phoneme]);
   
@@ -51,15 +55,43 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
   useEffect(() => {
     if (clone) {
       // Modeli tapmaq
-      console.log('Character model loaded, searching for morph targets...')
+      // console.log('Character model loaded, searching for morph targets...')
+      
+      // CC_Base_Body_1 meshini əldə etmək üçün dəyişən
+      let foundCCBaseBody = false;
       
       clone.traverse((object: any) => {
-        if (object.isMesh && object.morphTargetDictionary) {
-          meshRef.current = object as THREE.SkinnedMesh
-          modelRef.current = object
-          setIsModelReady(true)
+        // Log CC_Base_Body_1 morph targets specifically
+        if (object.name === 'CC_Base_Body_1' && object.morphTargetDictionary) {
+          // console.log('Found CC_Base_Body_1 mesh with morph targets:');
+          // console.log('All morph targets in CC_Base_Body_1:', Object.keys(object.morphTargetDictionary));
+          
+          // Əsas mesh olaraq CC_Base_Body_1 istifadə et
+          meshRef.current = object as THREE.SkinnedMesh;
+          modelRef.current = object;
+          setIsModelReady(true);
+          foundCCBaseBody = true;
+          
+          // Log each morph target with its index
+          Object.entries(object.morphTargetDictionary).forEach(([name, index]) => {
+            // console.log(`Morph Target: ${name}, Index: ${index}`);
+          });
         }
-      })
+      });
+      
+      // Əgər CC_Base_Body_1 tapılmadısa, ilk morph targetli mesh-i istifadə et
+      if (!foundCCBaseBody) {
+        clone.traverse((object: any) => {
+          if (object.isMesh && object.morphTargetDictionary && !foundCCBaseBody) {
+            // console.log('CC_Base_Body_1 not found, using alternative mesh:', object.name);
+            // console.log('Available morph targets:', Object.keys(object.morphTargetDictionary));
+            meshRef.current = object as THREE.SkinnedMesh;
+            modelRef.current = object;
+            setIsModelReady(true);
+            foundCCBaseBody = true;
+          }
+        });
+      }
     }
   }, [clone])
   
@@ -78,17 +110,17 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
     // Sakin duruş animasiyası
     if (standMotion.animations && standMotion.animations.length > 0) {
       standAnim = standMotion.animations[0]
-      console.log('Standing animation loaded')
+      // console.log('Standing animation loaded')
     }
     
     // Danışma animasiyası
     if (talkMotion.animations && talkMotion.animations.length > 0) {
       talkAnim = talkMotion.animations[0]
-      console.log('Talking animation loaded')
+      // console.log('Talking animation loaded')
     } else if (talkMotion1.animations && talkMotion1.animations.length > 0) {
       // Alternativ danışma animasiyası
       talkAnim = talkMotion1.animations[0]
-      console.log('Talking animation 1 loaded')
+      // console.log('Talking animation 1 loaded')
     }
     
     // Sakin duruş actionu
@@ -111,7 +143,7 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
       talkAction.play()
       talkActionRef.current = talkAction
       
-      console.log('Talk animation action prepared with weight 0')
+      // console.log('Talk animation action prepared with weight 0')
     }
     
     return () => {
@@ -126,20 +158,86 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
     // Phoneme values based on Rhubarb phoneme set (A B C D E F G H X)
     // Daha yaxşı animasiya üçün hər fonemin optimal ağız açıqlığı dəyəri
     switch (phoneme) {
-      case 'A': return 0.85; // A - açıq ağız (a, ə səsləri) - "a" kimi
-      case 'B': return 0.6;  // B - yarı açıq ağız (e, ə səsləri) - "e" kimi
-      case 'C': return 0.2;  // C - qapalı ağız (m, b, p səsləri) - "m" kimi
-      case 'D': return 0.65; // D - dairəvi ağız (o, u səsləri) - "o" kimi
-      case 'E': return 0.35; // E - dar ağız (i, ı səsləri) - "i" kimi
-      case 'F': return 0.45; // F - dişlər arası (f, v səsləri) - "f" kimi
-      case 'G': return 0.4;  // G - "l" səsi - dil dişlərə toxunur
-      case 'H': return 0.5;  // H - nəfəsli səslər (h, x) - "h" kimi
+      case 'A': return 1; // A - açıq ağız (a, ə səsləri) - "a" kimi
+      case 'B': return 1;  // B - yarı açıq ağız (e, ə səsləri) - "e" kimi
+      case 'C': return 1;  // C - qapalı ağız (m, b, p səsləri) - "m" kimi
+      case 'D': return 1; // D - dairəvi ağız (o, u səsləri) - "o" kimi
+      case 'E': return 1; // E - dar ağız (i, ı səsləri) - "i" kimi
+      case 'F': return 1; // F - dişlər arası (f, v səsləri) - "f" kimi
+      case 'G': return 1;  // G - "l" səsi - dil dişlərə toxunur
+      case 'H': return 1;  // H - nəfəsli səslər (h, x) - "h" kimi
       case 'X': return 0.0;  // X - səssiz, ağız bağlı
       default: return 0.0;   // Tanınmayan fonem - default olaraq qapalı
     }
   };
   
-  // Update animation in frame loop - lip sync dəyərinə görə animasiyaları qarışdıraq
+  // Phoneme to morph target mapping - each phoneme maps to multiple morph targets with weights
+  const getPhonemeTargets = (phoneme: string | undefined): Record<string, number> => {
+    if (!phoneme) return {};
+    
+    // Default weights for each phoneme based on Reallusion Character Creator visemes
+    // https://manual.reallusion.com/Character-Creator-4/Content/ENU/4.0/06-Facial-Profile-Editor/8_7_and_1_1.htm
+    switch (phoneme) {
+      case 'A': // A - açıq ağız (a, ə səsləri) - "Ah" viseme
+        return {
+          "Ah": 1.0
+        };
+      case 'B': // B - yarı açıq ağız (e, ə səsləri) - "AE" viseme
+        return {
+          "AE": 1.0
+        };
+      case 'C': // C - qapalı ağız (m, b, p səsləri) - "B_M_P" viseme
+        return {
+          "B_M_P": 1.0
+        };
+      case 'D': // D - dairəvi ağız (o, u səsləri) - "Oh" və "W_OO" viseme qarışığı
+        return {
+          "Oh": 1
+        };
+      case 'E': // E - dar ağız (i, ı səsləri) - "IH" və "EE" viseme qarışığı
+        return {
+          "IH": 1
+        };
+      case 'F': // F - dişlər arası (f, v səsləri) - "F_V" viseme
+        return {
+          "F_V": 1.0
+        };
+      case 'G': // G - dil ön dişlərdə (l səsi) - "T_L_D_N" viseme
+        return {
+          "T_L_D_N": 1.0
+        };
+      case 'H': // H - nəfəsli səslər (h, x) - "K_G_H_NG" viseme
+        return {
+          "K_G_H_NG": 1.0
+        };
+      case 'X': // X - səssiz, ağız bağlı - neytral
+        return {
+          // Boş obyekt - heç bir morph target tətbiq olunmasın
+        };
+      default: // Default - ağız bağlı
+        return {};
+    }
+  };
+  
+  // Rhubarb phoneme to Reallusion viseme mapping helper
+  const mapRhubarbToViseme = (phoneme: string | undefined): string | undefined => {
+    if (!phoneme) return undefined;
+    
+    switch (phoneme) {
+      case 'A': return "Ah";      // A - açıq ağız (a, ə səsləri) 
+      case 'B': return "AE";      // B - yarı açıq ağız (e, ə səsləri)
+      case 'C': return "B_M_P";   // C - qapalı ağız (m, b, p səsləri)
+      case 'D': return "Oh";      // D - dairəvi ağız (o, u səsləri)
+      case 'E': return "EE";      // E - dar ağız (i, ı səsləri)
+      case 'F': return "F_V";     // F - dişlər arası (f, v səsləri)
+      case 'G': return "T_L_D_N"; // G - "l" səsi 
+      case 'H': return "K_G_H_NG"; // H - nəfəsli səslər (h, x)
+      case 'X': return undefined;  // X - səssiz, ağız bağlı
+      default: return undefined;
+    }
+  };
+  
+  // Update animation in frame loop
   useFrame((state, delta) => {
     // Update animation mixer
     if (mixerRef.current) {
@@ -154,54 +252,124 @@ export function AnimatedCharacter(props: AnimatedCharacterProps) {
       lipSyncValue = getPhonemeValue(currentPhoneme);
     }
     
-    // Lip sync dəyəri varsa animasiyaları qarışdıraq
+    // Sabit animasiya - character sadəcə ilkin animasiyada qalsın
     if (standActionRef.current && talkActionRef.current) {
-      // Danışma animasiyası üçün ağırlığı hesablayın
-      // Səs səviyyəsi arıqca danışma animasiyası daha çox görünəcək
-      let talkWeight = lipSyncValue;
+      // Danışma animasiyasını daima 0 ağırlığında saxlayaq
+      talkActionRef.current.setEffectiveWeight(0);
       
-      // Səlis keçid üçün interpolasiya edək
-      const currentTalkWeight = talkActionRef.current.getEffectiveWeight();
-      const targetTalkWeight = talkWeight;
-      
-      // Hamar keçid üçün LERP (xətti interpolasiya)
-      const newTalkWeight = THREE.MathUtils.lerp(currentTalkWeight, targetTalkWeight, 0.25);
-      
-      // Danışma actionunun ağırlığını təyin edək
-      talkActionRef.current.setEffectiveWeight(newTalkWeight);
-      
-      // Sakin duruş actionunun ağırlığını tərs olaraq təyin edək (ikisi birlikdə 1.0 olmalıdır)
-      standActionRef.current.setEffectiveWeight(1.0 - newTalkWeight);
-      
-      // Loqlar - nadir hallarda göstərmək üçün
-      if (Math.random() < 0.005) {
-        console.log(`Animation weights - Stand: ${standActionRef.current.getEffectiveWeight().toFixed(2)}, Talk: ${talkActionRef.current.getEffectiveWeight().toFixed(2)}, LipSync value: ${lipSyncValue.toFixed(2)}${currentPhoneme ? `, Phoneme: ${currentPhoneme}` : ''}`);
-      }
+      // Sakin duruş animasiyasını daima tam ağırlıqda saxlayaq
+      standActionRef.current.setEffectiveWeight(1.0);
     }
     
-    // Morph targetləri də eyni zamanda tətbiq edək - lip sync dəyərinə görə
+    // Morph targetləri tətbiq edək - fonemə və lip sync dəyərinə görə
     if (isModelReady && meshRef.current) {
       const mesh = meshRef.current
       
-      // Model spesifik morph target-lər
-      const jawOpenIndex = mesh.morphTargetDictionary?.["Jaw_Open"] ?? -1;
-      const vOpenIndex = mesh.morphTargetDictionary?.["V_Open"] ?? -1;
+      // Check if we just transitioned to X phoneme (silence)
+      const justTransitionedToSilence = currentPhoneme === 'X' && prevPhonemeRef.current !== 'X';
       
-      // Lip sync dəyəri
-      const lipSyncValueMorph = lipSyncValue;
-      
-      // Çənə açılması
-      if (jawOpenIndex !== -1 && mesh.morphTargetInfluences) {
-        const currentValue = mesh.morphTargetInfluences[jawOpenIndex] || 0;
-        const targetValue = lipSyncValueMorph * 0.8; // 80% maksimum 
-        mesh.morphTargetInfluences[jawOpenIndex] = THREE.MathUtils.lerp(currentValue, targetValue, 0.2);
+      // If we just transitioned to silence, perform a hard reset of all morph targets
+      if (justTransitionedToSilence && mesh.morphTargetDictionary && mesh.morphTargetInfluences) {
+        const visemeTargets = [
+          "AE", "Ah", "B_M_P", "Ch_J", "EE", "Er", "F_V", "IH", 
+          "K_G_H_NG", "Oh", "R", "S_Z", "T_L_D_N", "TH", "W_OO"
+        ];
+        
+        // Reset ALL morph targets immediately
+        visemeTargets.forEach(viseme => {
+          const index = mesh.morphTargetDictionary?.[viseme];
+          if (index !== undefined && mesh.morphTargetInfluences) {
+            // Direct reset - no lerping
+            mesh.morphTargetInfluences[index] = 0;
+          }
+        });
+        
+        // Update prevPhoneme ref
+        prevPhonemeRef.current = 'X';
+        console.log('X foneminə keçid - bütün morph targetlər sıfırlandı');
+        
+        // No need to continue processing morph targets
+        return;
       }
       
-      // Ağız açılması
-      if (vOpenIndex !== -1 && mesh.morphTargetInfluences) {
-        const currentValue = mesh.morphTargetInfluences[vOpenIndex] || 0;
-        const targetValue = lipSyncValueMorph * 0.6; // 60% maksimum
-        mesh.morphTargetInfluences[vOpenIndex] = THREE.MathUtils.lerp(currentValue, targetValue, 0.2);
+      // Get morph targets for current phoneme
+      const morphTargets = getPhonemeTargets(currentPhoneme);
+      const currentViseme = mapRhubarbToViseme(currentPhoneme);
+      
+      // Reset all viseme morph targets first
+      if (mesh.morphTargetDictionary && mesh.morphTargetInfluences) {
+        const visemeTargets = [
+          "AE", "Ah", "B_M_P", "Ch_J", "EE", "Er", "F_V", "IH", 
+          "K_G_H_NG", "Oh", "R", "S_Z", "T_L_D_N", "TH", "W_OO"
+        ];
+        
+        // Reset all viseme targets
+        visemeTargets.forEach(viseme => {
+          const index = mesh.morphTargetDictionary?.[viseme];
+          if (index !== undefined && mesh.morphTargetInfluences) {
+            // Gradually decay when not in use
+            if (mesh.morphTargetInfluences[index] > 0.01) {
+              mesh.morphTargetInfluences[index] *= 0.9;
+            } else {
+              mesh.morphTargetInfluences[index] = 0;
+            }
+          }
+        });
+        
+        // Log active morph target values - sırf debug üçün
+        let activeTargets: Record<string, number> = {};
+        
+        // Apply new morph targets for current phoneme
+        Object.entries(morphTargets).forEach(([targetName, weight]) => {
+          const index = mesh.morphTargetDictionary?.[targetName];
+          if (index !== undefined && mesh.morphTargetInfluences) {
+            const currentValue = mesh.morphTargetInfluences[index] || 0;
+            const targetValue = weight * Math.max(0.6, lipSyncValue); // Minimum 0.6 intensity for better visibility
+            // Smooth transition for viseme application
+            mesh.morphTargetInfluences[index] = THREE.MathUtils.lerp(currentValue, targetValue, 0.5);
+            
+            // Tədbiq olunan və müəyyən dəyərdən yüksək olan morph targetləri saxlayırıq
+            if (mesh.morphTargetInfluences[index] > 0.05) {
+              activeTargets[targetName] = parseFloat(mesh.morphTargetInfluences[index].toFixed(2));
+            }
+          } else if (index === undefined) {
+            // Log missing morph targets once
+            if (!window.mouthMorphTargetWarningLogged) {
+              // console.warn(`Viseme morph target not found: ${targetName}. Available targets:`, 
+              //   mesh.morphTargetDictionary ? Object.keys(mesh.morphTargetDictionary) : []);
+              window.mouthMorphTargetWarningLogged = true;
+            }
+          }
+        });
+        
+        // Add slight smile for X phoneme (when quiet)
+        if (currentPhoneme === 'X') {
+          // X fonemi zamanı heç bir morph target tətbiq olunmasın
+          // Bütün morph target-ləri sıfırlayaq
+          visemeTargets.forEach(viseme => {
+            const index = mesh.morphTargetDictionary?.[viseme];
+            if (index !== undefined && mesh.morphTargetInfluences) {
+              // Birdəfəlik sıfırlama
+              mesh.morphTargetInfluences[index] = 0;
+            }
+          });
+        }
+        
+        // Aktiv morph targetləri və dəyərlərini konsola çıxar - cari fonem üçün
+        if (Object.keys(activeTargets).length > 0 && currentPhoneme !== 'X') {
+          // Sadəcə aşağıdakı hallarda log edək:
+          // 1. Fonem dəyişdiyi halda
+          // 2. Və ya son log-dan ən az 500ms keçdikdə (çox sıx olmasın deyə)
+          const now = Date.now();
+          const timeSinceLastLog = now - lastLogTimeRef.current;
+          const shouldLog = prevPhonemeRef.current !== currentPhoneme && timeSinceLastLog > 500;
+          
+          if (shouldLog) {
+            console.log(`Phoneme: ${currentPhoneme} - Active morph targets:`, activeTargets);
+            prevPhonemeRef.current = currentPhoneme;
+            lastLogTimeRef.current = now;
+          }
+        }
       }
     }
   })
@@ -221,7 +389,7 @@ declare global {
 }
 
 // Preload model
-useGLTF.preload('/models/ayla/Ayla.glb')
+useGLTF.preload('/models/ayla/Ayla_Viseme.glb')
 useGLTF.preload('/models/ayla/Ayla_Stand_Motion.glb')
 useGLTF.preload('/models/ayla/Ayla_Talk_Motion.glb')
 useGLTF.preload('/models/ayla/Ayla_Talk_Motion1.glb') 

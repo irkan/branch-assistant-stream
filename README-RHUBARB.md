@@ -56,7 +56,7 @@ To use the actual Rhubarb phoneme extraction (instead of mock data), you need to
 
 Rhubarb uses the following phoneme types:
 
-- `A`: Open mouth (as in "cat")
+- `A`: Open mouth (as in "cat") 
 - `B`: Slightly open mouth (as in "pet")
 - `C`: Closed mouth (as in "map")
 - `D`: Round mouth (as in "dog")

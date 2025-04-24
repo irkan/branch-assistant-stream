@@ -26,11 +26,11 @@ const textToSpeech = async (text: string): Promise<ArrayBuffer | null> => {
     
     const response = await openai.audio.speech.create({
       model: "gpt-4o-mini-tts", // daha sürətli model
-      voice: "nova", // qadın səsi
+      voice: "alloy", // qadın səsi
       input: text,
-      instructions: "Speak in a cheerful and positive tone.",
-      speed: 1.0,
-      response_format: "wav"
+      instructions: "Speak in a cheerful, positive, slowly tone and Azerbaijani language.",
+      speed: 0.25,
+      response_format: "wav",
     });
     
     const arrayBuffer = await response.arrayBuffer();
@@ -379,7 +379,7 @@ function App() {
   
   // Client-side fonem ardıcıllığı yaratmaq üçün köməkçi funksiya
   const generateClientSidePhonemeTiming = () => {
-    console.log('Client-side fonem zamanlaması yaradılır...');
+    // console.log('Client-side fonem zamanlaması yaradılır...');
     
     // Əsas Azərbaycan dili fonemlərindən ibarət ardıcıllıq yaradaq
     const phonemeSequence = [
@@ -456,7 +456,7 @@ function App() {
     // Ardıcıllıq üzrə fonemləri zamanlayaq
     phonemeSequence.forEach((item, index) => {
       setTimeout(() => {
-        console.log(`Client-side fonem: ${currentTime.toFixed(2)}s - ${item.value}`);
+        // console.log(`Client-side fonem: ${currentTime.toFixed(2)}s - ${item.value}`);
         setCurrentPhoneme(item.value);
       }, currentTime * 1000);
       
@@ -496,6 +496,11 @@ function App() {
           // Səsləndirmə bitdikdən sonra çağrılacaq funksiya
           const onSpeechComplete = () => {
             setIsSpeaking(false);
+            
+            // Dərhal X foneminə (sakitlik) qayıdaq
+            setCurrentPhoneme("X");
+            console.log('Səsləndirmə bitdi - X foneminə keçildi');
+            
             // Mikrofonu açaq
             setTimeout(() => {
               if (speechRecognitionRef.current) {
