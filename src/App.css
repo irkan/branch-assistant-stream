@@ -21,13 +21,23 @@
 
 .video-container {
   position: absolute;
-  right: 10px;
-  bottom: 10px;
+  left: 10px;
+  top: 10px;
+  width: 600px;
   opacity: 0.5;
   z-index: 10;
   border-radius: 5px;
   overflow: hidden;
-  box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+  transform: scale(0.75);
+  transform-origin: top left;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  transition: opacity 0.3s ease;
+  background-color: transparent;
+}
+
+.video-container:hover {
+  opacity: 0.8;
 }
 
 .video-container video,

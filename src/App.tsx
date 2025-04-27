@@ -2,16 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 import Scene3D from './components/Scene3D';
 import SpeechRecognition, { SpeechRecognitionRef } from './components/SpeechRecognition';
-import LipSync from './components/LipSync';
 import InterruptionHandler from './components/InterruptionHandler';
 import { CustomerMemoryUtils, CustomerData } from './components/CustomerMemory';
 import * as faceapi from 'face-api.js';
-import { mockSimaAPI, SimaResponse, canvasToBase64, generateGreeting } from './components/SimaIntegration';
+import { SimaResponse } from './components/SimaIntegration';
 import ChatBox from './components/ChatBox';
-import { useAudio } from './hooks/useAudio';
-import axios from 'axios';
 import OpenAI from "openai";
-import RhubarbTest from './components/RhubarbTest';
 
 // OpenAI API client yaradırıq
 const openai = new OpenAI({
@@ -44,7 +40,7 @@ const textToSpeech = async (text: string): Promise<ArrayBuffer | null> => {
 };
 
 // Audio buffer-i səsləndirmək üçün funksiya
-const playAudioFromBuffer = async (audioBuffer: ArrayBuffer, onComplete?: () => void, onRhubarbProcess?: (url: string) => Promise<void>): Promise<void> => {
+const playAudioFromBuffer = async (audioBuffer: ArrayBuffer, onComplete?: () => void, text?: string, phonemeSetter?: (phoneme: string) => void): Promise<void> => {
   try {
     // Audio Context yaradaq
     const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -52,18 +48,11 @@ const playAudioFromBuffer = async (audioBuffer: ArrayBuffer, onComplete?: () => 
     // Audio buffer decodlamaq
     const decodedData = await audioContext.decodeAudioData(audioBuffer);
     
-    // Save audio as blob for Rhubarb processing
+    // Save audio as blob for sync processing
     const blob = audioBufferToBlob(decodedData);
     const audioUrl = URL.createObjectURL(blob);
     
-    console.log("Rhubarb üçün audio URL yaradıldı:", audioUrl);
-    
-    // Process with Rhubarb if callback is provided
-    if (onRhubarbProcess) {
-      onRhubarbProcess(audioUrl).catch(err => console.error("Rhubarb işləmə xətası:", err));
-    } else {
-      console.log("Rhubarb işləmə funksiyası təqdim edilməyib");
-    }
+    console.log("Səs faylı üçün audio URL yaradıldı:", audioUrl);
     
     // Audio Source node yaradaq
     const source = audioContext.createBufferSource();
@@ -71,6 +60,12 @@ const playAudioFromBuffer = async (audioBuffer: ArrayBuffer, onComplete?: () => 
     
     // Audio çıxışına bağlayaq
     source.connect(audioContext.destination);
+    
+    // Mətn varsa, səslə sinxronizasiya edək
+    if (text && phonemeSetter) {
+      // Burada mətn və səs sinxronizasiyası edilir
+      syncTextWithAudio(text, decodedData.duration * 1000, source, phonemeSetter);
+    }
     
     // Səsləndirməni başladaq
     source.start(0);
@@ -89,6 +84,55 @@ const playAudioFromBuffer = async (audioBuffer: ArrayBuffer, onComplete?: () => 
       onComplete();
     }
   }
+};
+
+// Mətni səslə sinxronizasiya edən funksiya
+const syncTextWithAudio = (
+  text: string, 
+  durationMs: number, 
+  audioSource: AudioBufferSourceNode,
+  setPhoneme: (phoneme: string) => void
+) => {
+  const characters = text.split('');
+  const intervalMs = durationMs / characters.length;
+  
+  console.log(`Character sync: ${characters.length} chars, ${durationMs.toFixed(2)}ms duration, ${intervalMs.toFixed(2)}ms per char`);
+  
+  let currentIndex = 0;
+  
+  // Audio bitdikdə interval-ı dayandırmaq üçün ref
+  const intervalIdRef = { current: 0 };
+  
+  // Səsləndirmə bitdikdə interval-ı təmizləyək
+  audioSource.onended = () => {
+    if (intervalIdRef.current) {
+      clearInterval(intervalIdRef.current);
+      console.log("Character sync stopped");
+      // Make sure we reset to silence
+      setPhoneme("_");
+    }
+  };
+  
+  // Mətni ardıcıl göstərmə interval-ı
+  intervalIdRef.current = window.setInterval(() => {
+    if (currentIndex < characters.length) {
+      const currentChar = characters[currentIndex];
+      
+      // Hərfi kiçik hərfə çevirib fonem kimi ötürürük
+      // Boşluq və nöqtələmə işarələri üçün "_" (silence)
+      const nonSpeechChars = [' ', '.', ',', '!', '?', ':', ';'];
+      const phoneme = nonSpeechChars.includes(currentChar) ? '_' : currentChar.toLowerCase();
+      
+      // State-ə fonem məlumatını ötürürük
+      setPhoneme(phoneme);
+      
+      currentIndex++;
+    } else {
+      clearInterval(intervalIdRef.current);
+      setPhoneme("_"); // Sonda səssiz
+      console.log("Character sync complete - reset to silence");
+    }
+  }, intervalMs);
 };
 
 // Convert AudioBuffer to Blob
@@ -176,10 +220,7 @@ const AudioAnalyzer: React.FC<AudioAnalyzerProps> = ({ audioBlob, isPlaying }) =
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const analyzerRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const animationRef = useRef<number | null>(null);
-  const [amplitudes, setAmplitudes] = useState<number[]>([]);
 
   useEffect(() => {
     if (audioBlob && isPlaying) {
@@ -280,10 +321,6 @@ const AudioAnalyzer: React.FC<AudioAnalyzerProps> = ({ audioBlob, isPlaying }) =
   );
 };
 
-// Global audio context yaddaşı
-let globalAudioContext: AudioContext | null = null;
-let globalAudioElement: HTMLAudioElement | null = null;
-
 // Add a global static counter to track audio files
 // Global özəllikdir, hər cari session müddətində artacaq
 let audioFileCounter = 0;
@@ -317,11 +354,6 @@ function App() {
   // Speech recognition refs
   const speechRecognitionRef = useRef<SpeechRecognitionRef>(null);
   const microphoneActivationTimerRef = useRef<NodeJS.Timeout | null>(null);
-  
-  // Audio analysis refs
-  const audioContext = useRef<AudioContext | null>(null);
-  const audioAnalyser = useRef<AnalyserNode | null>(null);
-  const audioDataArray = useRef<Uint8Array | null>(null);
 
   // Authentication and user states
   const [currentCustomer, setCurrentCustomer] = useState<CustomerData | null>(null);
@@ -336,7 +368,8 @@ function App() {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [lipSyncValue, setLipSyncValue] = useState(0);
+  // Using phoneme-based lip sync instead of generic value
+  const [currentPhoneme, setCurrentPhoneme] = useState<string>("_"); // Default to silent
   const [userSpeech, setUserSpeech] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [isModelLoaded, setIsModelLoaded] = useState(false);
@@ -357,117 +390,10 @@ function App() {
 
   // State variables for audio analysis
   const [currentAudioBlob, setCurrentAudioBlob] = useState<Blob | null>(null);
-
-  // Add a state for showing the Rhubarb Test component
-  const [showRhubarbTest, setShowRhubarbTest] = useState(false);
-
-  // Add state for current phoneme
-  const [currentPhoneme, setCurrentPhoneme] = useState<string>("X"); // Default to silent
-
-  // Process audio with Rhubarb - inside App component
-  const processRhubarbAudio = async (audioUrl: string): Promise<void> => {
-    try {
-      console.log('Rhubarb ilə səs faylı işlənir (App komponenti içində)...');
-      
-      // Client-side fonem ardıcıllığı ilə işləyək
-      generateClientSidePhonemeTiming();
-      
-    } catch (error) {
-      console.error('Rhubarb işləmə xətası:', error);
-    }
-  };
   
-  // Client-side fonem ardıcıllığı yaratmaq üçün köməkçi funksiya
-  const generateClientSidePhonemeTiming = () => {
-    // console.log('Client-side fonem zamanlaması yaradılır...');
-    
-    // Əsas Azərbaycan dili fonemlərindən ibarət ardıcıllıq yaradaq
-    const phonemeSequence = [
-      { value: "X", duration: 0.1 },  // səssiz başlanğıc
-      { value: "B", duration: 0.2 },  // "sa" - Salam
-      { value: "A", duration: 0.15 }, // "lam"
-      { value: "C", duration: 0.15 }, // "m"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "H", duration: 0.15 }, // "si" - Sizdə 
-      { value: "E", duration: 0.2 },  // "iz"
-      { value: "C", duration: 0.15 }, // "də"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "D", duration: 0.15 }, // "o" - olan
-      { value: "G", duration: 0.15 }, // "la"
-      { value: "C", duration: 0.15 }, // "n"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "H", duration: 0.15 }, // "su" - sual
-      { value: "A", duration: 0.2 },  // "al"
-      { value: "G", duration: 0.15 }, // "l"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "B", duration: 0.15 }, // "və" - və ya
-      { value: "E", duration: 0.15 }, // "ya"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "B", duration: 0.2 },  // "eh" - ehtiyaclarınızı
-      { value: "E", duration: 0.15 }, // "ti"
-      { value: "A", duration: 0.15 }, // "yac"
-      { value: "F", duration: 0.15 }, // "la"
-      { value: "C", duration: 0.15 }, // "rı"
-      { value: "E", duration: 0.15 }, // "nız"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "C", duration: 0.15 }, // "bi" - bildirə
-      { value: "E", duration: 0.15 }, // "ldi"
-      { value: "D", duration: 0.15 }, // "rə"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "C", duration: 0.15 }, // "bi" - bilərsiniz
-      { value: "E", duration: 0.15 }, // "lər"
-      { value: "H", duration: 0.15 }, // "si"
-      { value: "E", duration: 0.15 }, // "niz"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "C", duration: 0.15 }, // "mə" - mən
-      { value: "B", duration: 0.15 }, // "ən"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "H", duration: 0.15 }, // "kö" - kömək
-      { value: "D", duration: 0.15 }, // "mə"
-      { value: "H", duration: 0.15 }, // "ək"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "B", duration: 0.15 }, // "et" - etməyə
-      { value: "C", duration: 0.15 }, // "mə"
-      { value: "E", duration: 0.15 }, // "yə"
-      { value: "X", duration: 0.1 },  // kiçik pauza
-      
-      { value: "A", duration: 0.15 }, // "ha" - hazıram
-      { value: "F", duration: 0.15 }, // "zı"
-      { value: "E", duration: 0.15 }, // "ra"
-      { value: "C", duration: 0.15 }, // "m"
-      { value: "X", duration: 0.2 }   // son
-    ];
-    
-    // İlk fonem (səssiz)
-    setCurrentPhoneme("X");
-    
-    let currentTime = 0;
-    
-    // Ardıcıllıq üzrə fonemləri zamanlayaq
-    phonemeSequence.forEach((item, index) => {
-      setTimeout(() => {
-        // console.log(`Client-side fonem: ${currentTime.toFixed(2)}s - ${item.value}`);
-        setCurrentPhoneme(item.value);
-      }, currentTime * 1000);
-      
-      currentTime += item.duration;
-    });
-    
-    // Sonda səssiz vəziyyətə qayıdaq
-    setTimeout(() => {
-      setCurrentPhoneme("X");
-    }, currentTime * 1000);
-  };
+  // Müştəri referans məlumatlarını saxlamaq üçün
+  const [referenceCustomerFace, setReferenceCustomerFace] = useState<Float32Array | null>(null);
+  const [lastActiveTime, setLastActiveTime] = useState<number>(Date.now());
 
   // Handle listening state change - use callback to prevent re-renders
   const handleListeningChange = useCallback((listening: boolean) => {
@@ -497,45 +423,32 @@ function App() {
           const onSpeechComplete = () => {
             setIsSpeaking(false);
             
-            // Dərhal X foneminə (sakitlik) qayıdaq
-            setCurrentPhoneme("X");
-            console.log('Səsləndirmə bitdi - X foneminə keçildi');
+            // Reset the phoneme to silence
+            setCurrentPhoneme("_");
+            console.log("Səsləndirmə bitdi - silence phoneme");
             
-            // Mikrofonu açaq
+            // Müəyyən bir məsafədən sonra nitq tanımaya başla
             setTimeout(() => {
+              console.log("Nitq tanıma yenidən başladıldı (səsləndirmə bitdikdən sonra)");
               if (speechRecognitionRef.current) {
-                setIsListening(true);
                 speechRecognitionRef.current.startListening();
-                console.log('Nitq tanıma yenidən başladıldı (səsləndirmə bitdikdən sonra)');
               }
-            }, 500);
+            }, 300);
           };
           
           // Səsləndirməyi başladaq və bitdikdən sonra callback funksiyasını çağıraq
-          await playAudioFromBuffer(audioBuffer, onSpeechComplete, processRhubarbAudio);
+          await playAudioFromBuffer(audioBuffer, onSpeechComplete, outputText, setCurrentPhoneme);
         } else {
           console.error("Səsləndirmə üçün audio buffer yaradıla bilmədi");
           setIsSpeaking(false);
-          
-          // Səsləndirmə xətası olsa da dinləməni başla
-          setTimeout(() => {
-            if (speechRecognitionRef.current) {
-              setIsListening(true);
-              speechRecognitionRef.current.startListening();
-              console.log('Nitq tanıma yenidən başladıldı (səsləndirmə xətasından sonra)');
-            }
-          }, 500);
         }
       } else {
-        console.error("JSON cavabında 'output' sahəsi tapılmadı:", jsonString);
-        setIsSpeaking(false);
+        console.error("JSON cavabından mətn çıxarıla bilmədi:", jsonResponse);
       }
     } catch (error) {
-      console.error("JSON cavabını parse etmə xətası:", error);
-      console.error("Orjinal mətn:", jsonString);
-      setIsSpeaking(false);
+      console.error("Webhook cavabı parsing xətası:", error);
     }
-  }, [processRhubarbAudio]);
+  }, [setCurrentPhoneme]);
   
   // Handle failures when webhook doesn't work
   const handleWebhookFailure = useCallback(() => {
@@ -550,36 +463,11 @@ function App() {
     }, 500);
   }, []);
   
-  // Handle speech recognition result
+  // Handle speech recognition result - mikrofon vasitəsilə alınmış mətnləri webhook servisinə göndərir
   const handleSpeechResult = useCallback(async (text: string) => {
-    // İlk olaraq əmin olaq ki, console işləyir
     try {
-      console.info('************** CONSOLE TEST START **************');
-      console.info('WEBHOOK DEBUGGING MODE ACTIVATED');
-      console.info(`Browser: ${navigator.userAgent}`);
-      console.info(`Time: ${new Date().toISOString()}`);
-      console.info(`Text received: ${text}`);
-      console.info('************** CONSOLE TEST END **************');
-
-      // Global səviyyədə log funksiyası qeydə alaq
-      window.onerror = function(message, source, lineno, colno, error) {
-        // alert(`Javascript xətası: ${message} at line ${lineno}. Debug konsolunu açın.`);
-        console.error(`Javascript xətası: ${message} at line ${lineno}. Debug konsolunu açın.`);
-        return true;
-      };
-
-      // Kiçik bir test mesajı çıxaraq
-      // setTimeout(() => {
-      //   alert(`Nitq tanındı: "${text}". Console-u yoxlayın (F12 və ya Command+Option+I)`);
-      // }, 100);
-    } catch (e) {
-      // alert(`Console test xətası: ${e}`);
-      console.error(`Console test xətası: ${e}`);
-    }
-
-    console.info("%c 🎤 NITQ TANIMLANDI:", "background: #4CAF50; color: white; padding: 5px; border-radius: 5px; font-weight: bold;", text);
-    
-    try {
+      console.info("%c 🎤 NITQ TANIMLANDI:", "background: #4CAF50; color: white; padding: 5px; border-radius: 5px; font-weight: bold;", text);
+      
       // Pause speech recognition while processing
       if (speechRecognitionRef.current) {
         speechRecognitionRef.current.stopListening();
@@ -597,38 +485,9 @@ function App() {
       
       if (webhookUrl) {
         try {
-          // Use our proxy to avoid CORS issues
-          // Extract the path part from webhook URL to make sure we're using the correct path
-          const webhookParts = webhookUrl.split('/');
-          const webhookPath = webhookParts.slice(3).join('/'); // Skip http://localhost:5678
-          const proxyUrl = `/api/${webhookPath}`;
-          
-          // Debug məlumatı
-          document.getElementById('debug-info')?.remove(); // əvvəlki debug məlumatını təmizləyək
-          /*const debugElement = document.createElement('div');
-          debugElement.id = 'debug-info';
-          debugElement.style.position = 'fixed';
-          debugElement.style.top = '0';
-          debugElement.style.left = '0';
-          debugElement.style.right = '0';
-          debugElement.style.backgroundColor = 'rgba(0,0,0,0.8)';
-          debugElement.style.color = 'white';
-          debugElement.style.padding = '10px';
-          debugElement.style.zIndex = '9999';
-          debugElement.style.fontSize = '14px';
-          debugElement.style.fontFamily = 'monospace';
-          debugElement.innerHTML = `
-            <div>🔍 DEBUG INFO</div>
-            <div>Webhook URL: ${webhookUrl}</div>
-            <div>Proxy URL: ${proxyUrl}</div>
-            <div>Speech text: ${text}</div>
-            <div>Time: ${new Date().toLocaleTimeString()}</div>
-            <div>Status: Sending request...</div>
-          `;
-          document.body.appendChild(debugElement);*/
           
           console.info("%c 🌐 Webhook sorğusu hazırlanır:", "background: #2196F3; color: white; padding: 5px; border-radius: 5px;", {
-            url: proxyUrl,
+            url: webhookUrl,
             method: 'POST',
             body: {
               message: userInput,
@@ -637,28 +496,19 @@ function App() {
             }
           });
           
-          // İNDİ BURAYA ANALİZ METODUNU ÇAĞIRIRAN FUNKSİYAMIZI ƏLAVƏ EDİRİK
-          console.log("🎯 ANALIZ METODU BURADA ÇAĞIRILIR - SPEECH WEBHOOK");
-          
-          // Hər yeni səs faylı üçün unikal nömrə generasiya edirik
-          currentAnalysisNumber = ++audioFileCounter;
-          console.log(`Səs faylı №${currentAnalysisNumber} analiz edilməyə hazırlanır`);
-          
           // AJAX sorğu əvəzinə XMLHttpRequest istifadə edək - daha aşağı səviyyədə debug olar
           const xhr = new XMLHttpRequest();
-          xhr.open('POST', proxyUrl, true);
+          xhr.open('POST', webhookUrl, true);
           xhr.setRequestHeader('Content-Type', 'application/json');
           
           // Progress event listener
           xhr.upload.onprogress = function(e) {
             console.info('Webhook sorğusu göndərilir:', Math.round((e.loaded / e.total) * 100) + '%');
-            //debugElement.innerHTML += `<div>Upload progress: ${Math.round((e.loaded / e.total) * 100)}%</div>`;
           };
           
           // Load event listener
           xhr.onload = async function() {
             console.info('Webhook cavabı alındı, status:', xhr.status);
-            console.info('Response headers:', xhr.getAllResponseHeaders());
             
             if (xhr.status === 200) {
               try {
@@ -703,40 +553,26 @@ function App() {
           console.info('Webhook sorğusu göndərilir...');
           xhr.send(data);
           
-          // Debug üçün timeout ilə yoxlayaq
-          setTimeout(() => {
-            if (xhr.readyState < 4) {
-            }
-          }, 3000);
-
-        } catch (webhookError: any) {
-          console.info('Webhook xətası:', webhookError);
-          console.error(`Webhook ilə əlaqə zamanı xəta: ${webhookError.message || webhookError}`);
+        } catch (error) {
+          console.error('Webhook sorğusu göndərmə xətası:', error);
           handleWebhookFailure();
         }
       } else {
-        // No webhook URL configured
-        console.info('Webhook URL konfiqurasiya edilməyib');
-        console.error('Webhook URL konfigurasiya edilməyib.');
+        console.error('Webhook URL tapılmadı, webhook sorğusu göndərilmir.');
         handleWebhookFailure();
       }
-    } catch (error: any) {
-      console.info('Əsas xəta:', error);
-      console.error(`Əsas xəta: ${error.message || error}`);
-      setIsSpeaking(false);
-      
-      // Resume speech recognition even if there was an error
-      if (speechRecognitionRef.current) {
-        speechRecognitionRef.current.startListening();
-      }
+    } catch (error) {
+      console.error('Ümumi xəta:', error);
+      handleWebhookFailure();
     }
   }, [parseAndSpeakResponse, handleWebhookFailure]);
   
   // Start speaking
-  const startSpeaking = useCallback((text: string) => {
+  const startSpeaking = useCallback(async (text: string) => {
     console.log('Started speaking:', text);
     setIsSpeaking(true);
     setIsListening(false);
+    
     // Stop listening while speaking
     if (speechRecognitionRef.current) {
       console.log('Stopping speech recognition during speaking');
@@ -745,43 +581,54 @@ function App() {
       console.warn('Speech recognition ref is null, cannot stop listening');
     }
 
-    // Schedule automatic activation of microphone after speaking
-    const speakingDuration = Math.max(2000, text.length * 80); // Estimate duration based on text length
-    console.log(`Scheduling microphone activation after ${speakingDuration}ms`);
-    
-    clearTimeout(microphoneActivationTimerRef.current || undefined);
-    microphoneActivationTimerRef.current = setTimeout(() => {
-      console.log('Automatic timeout after speaking, activating microphone');
-      // Call this function directly instead of handlePlaybackComplete to avoid circular dependency
-      setIsSpeaking(false);
-      setLipSyncValue(0);
+    // Birbaşa textToSpeech ilə səsləndirmə
+    try {
+      console.log("Mətn birbaşa səsləndirilir:", text);
       
-      // Delay a bit before activating microphone
-      setTimeout(() => {
-        // Only try to start listening if we're not already speaking
-        if (!isSpeaking) {
-          setIsListening(true);
+      // OpenAI ilə səsləndirməyə başla
+      const audioBuffer = await textToSpeech(text);
+      if (audioBuffer) {
+        // Səsləndirmə bitdikdən sonra çağrılacaq funksiya
+        const onSpeechComplete = () => {
+          setIsSpeaking(false);
           
-          // Start speech recognition manually
-          if (speechRecognitionRef.current) {
-            console.log('Starting speech recognition after automatic timeout');
-            try {
+          // Reset the phoneme to silence
+          setCurrentPhoneme("_");
+          console.log("Səsləndirmə bitdi - silence phoneme");
+          
+          // Müəyyən bir məsafədən sonra nitq tanımaya başla
+          setTimeout(() => {
+            console.log("Nitq tanıma yenidən başladıldı (səsləndirmə bitdikdən sonra)");
+            if (speechRecognitionRef.current) {
               speechRecognitionRef.current.startListening();
-              console.log('Successfully started speech recognition after timeout');
-            } catch (error) {
-              console.error('Error starting speech recognition after timeout:', error);
             }
-          }
+          }, 300);
+        };
+        
+        // Səsləndirməyi başladaq və bitdikdən sonra callback funksiyasını çağıraq
+        await playAudioFromBuffer(audioBuffer, onSpeechComplete, text, setCurrentPhoneme);
+      } else {
+        console.error("Səsləndirmə üçün audio buffer yaradıla bilmədi");
+        setIsSpeaking(false);
+      }
+    } catch (error) {
+      console.error("Səsləndirmə xətası:", error);
+      setIsSpeaking(false);
+      
+      // Xəta zamanı nitq tanımaya davam et
+      setTimeout(() => {
+        if (speechRecognitionRef.current) {
+          speechRecognitionRef.current.startListening();
         }
-      }, 300);
-    }, speakingDuration);
-  }, [isSpeaking]);
+      }, 500);
+    }
+  }, [setCurrentPhoneme]);
   
   // Handle playback complete
   const handlePlaybackComplete = useCallback(() => {
     console.log('Speech playback complete, activating microphone...');
     setIsSpeaking(false);
-    setLipSyncValue(0);
+    setCurrentPhoneme("_");
     
     // Clear any previous timeouts
     clearTimeout(microphoneActivationTimerRef.current || undefined);
@@ -825,7 +672,7 @@ function App() {
   const handleInterruption = useCallback(() => {
     console.log('Speech interrupted, activating microphone...');
     setIsSpeaking(false);
-    setLipSyncValue(0);
+    setCurrentPhoneme("_");
     
     // Clear any previous timeouts
     clearTimeout(microphoneActivationTimerRef.current || undefined);
@@ -1083,7 +930,7 @@ function App() {
         }
       } catch (lowQualityError) {
         console.error('Failed to access camera even with lower quality:', lowQualityError);
-        setCameraError("Kameranıza daxil olmaq mümkün olmadı. Lütfən kamera icazələrinizi yoxlayın və ya başqa bir kameradan istifadə edin.");
+        setCameraError("Kameranıza daxil olmaq mümkün olmadı. Lütfən kamera icazələrini yoxlayın və ya başqa bir kameradan istifadə edin.");
       }
     }
   };
@@ -1227,7 +1074,7 @@ function App() {
     if (isSpeaking) {
       console.log('Already speaking, stopping speech first');
       setIsSpeaking(false);
-      setLipSyncValue(0);
+      setCurrentPhoneme("_");
     }
     
     // Set listening state to true
@@ -1288,6 +1135,34 @@ function App() {
     if (speechRecognitionRef.current) {
       speechRecognitionRef.current.setMicrophoneSensitivity(value);
       console.log(`Mikrofon həssaslığı dəyişdirildi: ${value}`);
+    }
+  }, []);
+  
+  // Fonyeri səs-küydən təmizləmə parametrləri
+  const [noiseReduction, setNoiseReduction] = useState<number>(0.2); // Arxa plan səsi azaltma dərəcəsi
+  const [voiceBoost, setVoiceBoost] = useState<number>(1.5); // Səs gücləndirmə dərəcəsi
+
+  // Arxa plan səs-küyü azaltma parametrlərini yeniləyən funksiya
+  const updateNoiseReduction = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseFloat(event.target.value);
+    setNoiseReduction(value);
+    
+    // Noise reduction parametrini SpeechRecognition komponentinə ötürürük
+    if (speechRecognitionRef.current) {
+      speechRecognitionRef.current.setNoiseReduction(value);
+      console.log(`Arxa plan səs-küyü azaltma dərəcəsi: ${value}`);
+    }
+  }, []);
+
+  // Səs gücləndirmə parametrlərini yeniləyən funksiya
+  const updateVoiceBoost = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const value = parseFloat(event.target.value);
+    setVoiceBoost(value);
+    
+    // Voice boost parametrini SpeechRecognition komponentinə ötürürük
+    if (speechRecognitionRef.current) {
+      speechRecognitionRef.current.setVoiceBoost(value);
+      console.log(`Səs gücləndirmə dərəcəsi: ${value}`);
     }
   }, []);
   
@@ -1432,7 +1307,7 @@ function App() {
       setDetectedFace(detectedFaceImage);
     }
   }, [currentCustomer, detectedFaceImage]);
-
+  
   // Handle detected face appearance in top right corner and send greeting
   useEffect(() => {
     // Only run this effect when face is first detected and visible and greeting hasn't been sent yet
@@ -1449,81 +1324,46 @@ function App() {
       setIsProcessing(true);
       
       // Send greeting to webhook
-      const webhookUrl = process.env.REACT_APP_WEBHOOK_URL;
-      console.log('REACT_APP_WEBHOOK_URL is:', webhookUrl); // Debug log for webhook URL
-      if (webhookUrl) {
-        (async () => {
+      (async () => {
+        try {
+          
+          // İNDİ BURAYA ANALİZ METODUNU ÇAĞIRIRAN FUNKSİYAMIZI ƏLAVƏ EDİRİK
+          console.log("🎯 ANALIZ METODU BURADA ÇAĞIRILIR - GREETING");
+          
+          // Hər yeni səs faylı üçün unikal nömrə generasiya edirik - bunu bir dəfə burada edək
+          currentAnalysisNumber = ++audioFileCounter;
+          console.log(`Greeting səs faylı №${currentAnalysisNumber} analiz edilməyə hazırlanır`);
+          
           try {
-            // Send directly to the webhook URL without proxy
-            console.log(`Sending greeting directly to webhook: ${webhookUrl}`);
-            console.log('Complete webhook request details:', {
-              url: webhookUrl,
-              method: 'POST',
-              body: {
-                message: greetingMessage,
-                timestamp: new Date().toISOString(),
-                source: 'face_detection'
-              }
+            // Greeting mesajını JSON formatına çeviririk
+            const jsonGreetingMessage = JSON.stringify({
+              output: greetingMessage
             });
             
-            // İNDİ BURAYA ANALİZ METODUNU ÇAĞIRIRAN FUNKSİYAMIZI ƏLAVƏ EDİRİK
-            console.log("🎯 ANALIZ METODU BURADA ÇAĞIRILIR - GREETING WEBHOOK");
+            // Məlumatı işləmə və konsola çap etmə
+            console.log("%c 🤖 AI Salamlama (JSON):", "background: #9C27B0; color: white; padding: 5px; border-radius: 5px; font-weight: bold;", jsonGreetingMessage);
             
-            // Hər yeni səs faylı üçün unikal nömrə generasiya edirik - bunu bir dəfə burada edək
-            currentAnalysisNumber = ++audioFileCounter;
-            console.log(`Greeting səs faylı №${currentAnalysisNumber} analiz edilməyə hazırlanır`);
-            
-            // Send request to webhook
-            const webhookResponse = await fetch(webhookUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                message: greetingMessage,
-                timestamp: new Date().toISOString(),
-                source: 'face_detection'
-              })
-            });
-            
-            // Handle webhook response
-            if (webhookResponse.ok) {
-              try {
-                console.log('Successfully sent greeting to webhook, processing response');
-                
-                // Webhook-dən mətn cavabı alırıq
-                const responseText = await webhookResponse.text();
-                console.log('Webhook-dən mətn cavabı alındı:', responseText);
-                
-                // Məlumatı işləmə və konsola çap etmə
-                console.log("%c 🤖 AI Salamlama Cavabı (JSON):", "background: #9C27B0; color: white; padding: 5px; border-radius: 5px; font-weight: bold;", responseText);
-                
-                // JSON-u parse et və səsləndir
-                await parseAndSpeakResponse(responseText);
-              } catch (textError: any) {
-                console.info('Mətn emalı xətası:', textError);
-                console.error(`Mətn emalı xətası: ${textError.message || textError}`);
-                handleWebhookFailure();
-              }
-            } else {
-              console.error('Failed to send greeting to webhook');
-              // Fallback to immediate microphone activation
-              setIsProcessing(false);
-              setIsListening(true);
-              if (speechRecognitionRef.current) {
-                speechRecognitionRef.current.startListening();
-              }
-            }
-          } catch (webhookError: any) {
-            console.error('Error sending greeting to webhook:', webhookError);
+            // JSON formatında məlumatı ötürürük
+            await parseAndSpeakResponse(jsonGreetingMessage);
+          } catch (textError: any) {
+            console.info('Mətn emalı xətası:', textError);
+            console.error(`Mətn emalı xətası: ${textError.message || textError}`);
             setIsProcessing(false);
             setIsListening(true);
             if (speechRecognitionRef.current) {
               speechRecognitionRef.current.startListening();
             }
+            handleWebhookFailure();
           }
-        })();
-      }
+        } catch (webhookError: any) {
+          console.error('Error sending greeting to webhook:', webhookError);
+          setIsProcessing(false);
+          setIsListening(true);
+          if (speechRecognitionRef.current) {
+            speechRecognitionRef.current.startListening();
+          }
+        }
+      })();
     }
   }, [faceDetected, detectedFace, isSpeaking, isProcessing, hasGreetingSent, handleWebhookFailure, parseAndSpeakResponse]);
   
@@ -1751,48 +1591,125 @@ function App() {
     }, 1000);
   }, []);
   
-  // Toggle Rhubarb Test visibility
-  const toggleRhubarbTest = () => {
-    setShowRhubarbTest(prev => !prev);
-  };
+  // Bütün vəziyyətləri ilkin vəziyyətə qaytarmaq üçün funksiya
+  const resetCustomerSession = useCallback(() => {
+    console.log('Müştəri sessiyası sıfırlanır...');
+    
+    // Müştəri məlumatlarını sıfırla
+    setCurrentCustomer(null);
+    setReferenceCustomerFace(null);
+    setIsNewCustomer(true);
+    setHasGreetingSent(false);
+    setUserSpeech('');
+    setAiResponse('');
+    setDetectedFaceImage(null);
+    setFaceDetected(false);
+    setIsFaceDetected(false);
+    setMessages([]);
+    
+    // Nitq və səs vəziyyətlərini sıfırla
+    setIsSpeaking(false);
+    setIsListening(false);
+    setIsProcessing(false);
+    setCurrentPhoneme("_");
+    
+    // Aktivlik vaxtını yenilə
+    setLastActiveTime(Date.now());
+    
+    console.log('Müştəri sessiyası uğurla sıfırlandı, yeni müştəri gözlənilir');
+  }, []);
+
+  // Müştəri aktivliyini izləmək üçün interval
+  useEffect(() => {
+    // Yalnız bir müştəri tanındıqda intervalı başlat
+    if (currentCustomer && isModelLoaded && videoRef.current) {
+      console.log('Müştəri aktivliyi izləmə intervalı başladıldı');
+      
+      // Müştəri ilk dəfə tanındıqda onun referans üz deskriptorunu yadda saxla
+      if (!referenceCustomerFace && currentCustomer) {
+        (async () => {
+          try {
+            // Cari video çərçivəsindən üz deskriptorunu hesabla
+            const faceDescriptor = await faceapi.computeFaceDescriptor(videoRef.current as HTMLVideoElement);
+            if (faceDescriptor) {
+              setReferenceCustomerFace(faceDescriptor as Float32Array);
+              console.log('Müştərinin referans üz deskriptoru yadda saxlanıldı');
+              
+              // Aktivlik vaxtını yenilə
+              setLastActiveTime(Date.now());
+            }
+          } catch (error) {
+            console.error('Referans üz deskriptorunu hesablama xətası:', error);
+          }
+        })();
+      }
+      
+      // Hər 10 saniyədə bir müştəri aktivliyini yoxla
+      const activityInterval = setInterval(async () => {
+        const video = videoRef.current;
+        
+        if (!video || video.readyState < 4) {
+          return; // Video hazır deyil
+        }
+        
+        try {
+          console.log('Müştəri aktivliyi yoxlanılır...');
+          
+          // Üz aşkarlama seçimləri
+          const options = new faceapi.TinyFaceDetectorOptions({ 
+            inputSize: 416,
+            scoreThreshold: 0.5 
+          });
+          
+          // Üzləri aşkarla
+          const results = await faceapi.detectAllFaces(video, options);
+          
+          // Əgər heç bir üz aşkarlanmayıbsa
+          if (results.length === 0) {
+            console.log('Heç bir üz aşkarlanmadı, sessiya sıfırlanır');
+            resetCustomerSession();
+            return;
+          }
+          
+          // Əgər üz aşkarlanıbsa və referans üz varsa, müqayisə et
+          if (referenceCustomerFace) {
+            const currentFaceDescriptor = await faceapi.computeFaceDescriptor(video);
+            
+            if (currentFaceDescriptor) {
+              // Cari üz ilə referans üz arasındakı məsafəni hesabla
+              const distance = faceapi.euclideanDistance(
+                referenceCustomerFace, 
+                currentFaceDescriptor as Float32Array
+              );
+              
+              console.log('Üz müqayisəsi məsafəsi:', distance);
+              
+              // Əgər məsafə böyükdürsə, bu başqa bir müştəridir
+              if (distance > 0.8) { // Eynilik eşik dəyəri
+                console.log('Yeni müştəri aşkarlandı, sessiyanı sıfırlayıram');
+                resetCustomerSession();
+              } else {
+                // Eyni müştəridir, aktivlik vaxtını yenilə
+                setLastActiveTime(Date.now());
+                console.log('Müştəri aktivliyi təsdiqləndi, aktivlik vaxtı yeniləndi');
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Müştəri aktivliyi yoxlama xətası:', error);
+        }
+      }, 15000); // Hər 15 saniyədə bir
+      
+      // Təmizləmə funksiyası
+      return () => {
+        clearInterval(activityInterval);
+        console.log('Müştəri aktivliyi izləmə intervalı dayandırıldı');
+      };
+    }
+  }, [currentCustomer, isModelLoaded, referenceCustomerFace, resetCustomerSession]);
   
   return (
     <div className="App">
-      {/* Add a button to toggle the RhubarbTest component */}
-      <button 
-        onClick={toggleRhubarbTest}
-        style={{
-          position: 'absolute',
-          top: '10px',
-          right: '10px',
-          zIndex: 1000,
-          padding: '8px 12px',
-          backgroundColor: '#4CAF50',
-          color: 'white',
-          border: 'none',
-          borderRadius: '4px',
-          cursor: 'pointer'
-        }}
-      >
-        {showRhubarbTest ? 'Hide Rhubarb Test' : 'Show Rhubarb Test'}
-      </button>
-      
-      {/* Render the RhubarbTest component conditionally */}
-      {showRhubarbTest && (
-        <div style={{
-          position: 'absolute', 
-          top: '50px', 
-          right: '10px',
-          width: '400px',
-          backgroundColor: 'white',
-          borderRadius: '8px',
-          boxShadow: '0 4px 8px rgba(0,0,0,0.1)',
-          zIndex: 1000
-        }}>
-          <RhubarbTest />
-        </div>
-      )}
-      
       {/* Debug controls */}
       <div style={{ position: 'absolute', right: 10, bottom: 10, zIndex: 1000, display: 'flex', gap: '10px' }}>
         <button 
@@ -1836,7 +1753,7 @@ function App() {
       <Scene3D 
         isSpeaking={isSpeaking} 
         isListening={isListening}
-        lipSyncValue={lipSyncValue}
+        lipSyncValue={0} // We're using phoneme-based lip sync now
         isProcessing={isProcessing}
         detectedFace={detectedFaceImage}
         isFaceDetected={isFaceDetected}
@@ -1876,16 +1793,6 @@ function App() {
         autoStart={false}
         microphoneSensitivity={micSensitivity} // Həssaslıq ötürürük
       />
-      
-      {/* Lip Sync - deaktiv */}
-      {false && (
-        <LipSync
-          audioUrl={undefined}
-          isPlaying={isSpeaking}
-          onLipSyncValueChange={setLipSyncValue}
-          onPlaybackComplete={handlePlaybackComplete}
-        />
-      )}
       
       {/* Interruption Handler */}
       <InterruptionHandler
@@ -2037,7 +1944,7 @@ function App() {
         flexDirection: 'column',
         alignItems: 'center',
         color: 'white',
-        width: '180px'
+        width: '220px'
       }}>
         <div style={{ marginBottom: '5px', fontSize: '12px' }}>Mikrofon həssaslığı: {micSensitivity.toFixed(1)}</div>
         <input
@@ -2049,12 +1956,35 @@ function App() {
           onChange={handleSensitivityChange}
           style={{ width: '100%' }}
         />
+        
+        <div style={{ marginTop: '10px', marginBottom: '5px', fontSize: '12px' }}>Səs-küy azaltma: {noiseReduction.toFixed(1)}</div>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.1"
+          value={noiseReduction}
+          onChange={updateNoiseReduction}
+          style={{ width: '100%' }}
+        />
+        
+        <div style={{ marginTop: '10px', marginBottom: '5px', fontSize: '12px' }}>Səs gücləndirmə: {voiceBoost.toFixed(1)}</div>
+        <input
+          type="range"
+          min="1"
+          max="3"
+          step="0.1"
+          value={voiceBoost}
+          onChange={updateVoiceBoost}
+          style={{ width: '100%' }}
+        />
+        
         {volume > 0 && (
           <div className="volume-indicator" style={{
             width: '100%',
             height: '5px',
             background: '#444',
-            marginTop: '5px',
+            marginTop: '10px',
             position: 'relative'
           }}>
             <div style={{

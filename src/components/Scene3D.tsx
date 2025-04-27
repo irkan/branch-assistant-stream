@@ -1,7 +1,6 @@
 import React, { Suspense, useState, useRef, useEffect } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment, PerspectiveCamera, Html } from '@react-three/drei';
-import { Character } from './Character';
 import { TestCharacter } from './TestCharacter';
 import { SimpleCharacter } from './SimpleCharacter';
 import { AnimatedCharacter } from './AnimatedCharacter';
